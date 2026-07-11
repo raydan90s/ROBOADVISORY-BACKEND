@@ -74,6 +74,11 @@ class InvestorProfileCreate(BaseModel):
     # completa en su perfil (nunca se sobrescribe una ya existente).
     cedula_ruc: str | None = None
 
+    # Cada perfilamiento ya creaba una sesión independiente; ponerle nombre es lo único
+    # que le faltaba para ser una subcuenta. Opcional: sin él, el flujo de una sola
+    # cartera sigue funcionando igual.
+    nombre_subcuenta: str | None = Field(None, min_length=1, max_length=60)
+
     # {question_code: option_code}, ej. {"objetivo": "crecer", "horizonte": "largo"}
     # Los códigos válidos salen de GET /api/investor/questions.
     # El puntaje no viaja desde el cliente: lo calcula la BD vía scoring_rules.
@@ -100,6 +105,10 @@ class Investor(BaseModel):
     cedula_ruc: str | None = None
 
     puntaje: int
+    # El denominador del "12 / 15": es max(profile_thresholds.max_score) de la versión de
+    # reglas con la que se puntuó ESTA sesión. Viaja servido porque si mañana cambian los
+    # puntos de una opción, un 15 escrito a mano en el front pasaría a mentir.
+    puntaje_max: int | None = None
     perfil_riesgo: PerfilRiesgo
     respuestas: list[RespuestaDetalle] = Field(default_factory=list)
 
@@ -107,6 +116,54 @@ class Investor(BaseModel):
     monto: float | None = None
 
     created_at: datetime | None = None
+
+
+# ---------------------------------------------------------------------------
+# Subcuentas
+#
+# Una subcuenta ES una profiling_session: ya tenía dueño, monto, perfil y puntaje, y
+# `create_investor_profile` siempre insertó una nueva en cada llamada. Lo único que le
+# faltaba era un nombre y un techo de capital. Por eso acá no hay entidad nueva: hay
+# una vista distinta de lo que la base ya guardaba.
+# ---------------------------------------------------------------------------
+
+
+class Subcuenta(BaseModel):
+    """Una sesión de perfilamiento con su propuesta, vista como cartera del cliente."""
+
+    session_id: str
+    proposal_id: str | None = None
+
+    nombre: str
+    monto: float
+    perfil: PerfilRiesgo
+    puntaje: int
+    puntaje_max: int | None = None
+
+    # Nulos mientras el cliente no haya abierto su propuesta: la propuesta se
+    # materializa en el primer GET /portfolio, no al terminar el cuestionario.
+    estado: EstadoPropuesta | None = None
+    instrumento_principal: str | None = None
+    retorno_esperado_anual: float | None = None
+
+
+class ResumenCapital(BaseModel):
+    """El techo de capital y cómo está repartido. Las tres cifras las calcula el servidor.
+
+    `sin_asignar` no se resta en el front: es el número contra el que se valida el monto
+    de una subcuenta nueva, así que tiene que nacer del mismo lado que la validación.
+    """
+
+    capital_total: float | None = None
+    asignado: float
+    sin_asignar: float | None = None
+    subcuentas: list[Subcuenta] = Field(default_factory=list)
+
+
+class CapitalUpdate(BaseModel):
+    """Body del POST /api/investor/capital."""
+
+    capital_total: Decimal = Field(..., gt=0, max_digits=14, decimal_places=2)
 
 
 # ---------------------------------------------------------------------------
@@ -147,6 +204,7 @@ class PortfolioProposal(BaseModel):
 
     perfil_riesgo: PerfilRiesgo
     puntaje: int
+    puntaje_max: int | None = None
     riesgo_esperado: NivelRiesgo
     estado: EstadoPropuesta
 

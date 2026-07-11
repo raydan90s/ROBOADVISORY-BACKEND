@@ -10,6 +10,7 @@ from typing import Any
 
 from fastapi import HTTPException, status
 from psycopg import Connection
+from psycopg.errors import RaiseException
 from psycopg.types.json import Jsonb
 
 from src.config.database import fetch_all, fetch_one, get_connection
@@ -17,6 +18,7 @@ from src.models.auth import CurrentUser
 from src.models.investor import (
     AssetAllocation,
     BreakdownRespuesta,
+    CapitalUpdate,
     EstadoPropuesta,
     Investor,
     InvestorProfileCreate,
@@ -27,9 +29,10 @@ from src.models.investor import (
     PortfolioProposal,
     ProfilingBreakdown,
     RespuestaDetalle,
+    ResumenCapital,
+    Subcuenta,
 )
 from src.services.ai_agent import DatosExplicacion, Explicacion, redactar_explicacion
-
 
 def _rules_version_activa(conn: Connection) -> dict[str, Any]:
     """Versión de reglas vigente. Todo el cálculo se ancla a ella (auditable)."""
@@ -84,7 +87,26 @@ async def listar_preguntas() -> list[Pregunta]:
 async def create_investor_profile(
     payload: InvestorProfileCreate, usuario: CurrentUser
 ) -> Investor:
-    """Perfila al usuario del token: puntúa sus respuestas contra la BD y le asigna perfil.
+    """Perfila al usuario del token, traduciendo el guardarraíl de la base a un 422.
+
+    El techo de capital se valida dos veces y a propósito: `_exige_capital_disponible`
+    lo comprueba en la transacción para poder darle al cliente un mensaje con cifras, y
+    el trigger `fn_valida_capital_subcuenta` (migración 002) lo vuelve a comprobar dentro
+    de Postgres. El trigger es el que manda: si alguna vez insertamos una sesión por otro
+    camino, o si la comprobación de arriba se queda corta, la base rechaza la fila igual.
+    Que su `raise` llegue como 500 sería mentir: el cliente pidió más de lo que tiene.
+    """
+    try:
+        return await _perfilar(payload, usuario)
+    except RaiseException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=exc.diag.message_primary or str(exc).strip(),
+        ) from exc
+
+
+async def _perfilar(payload: InvestorProfileCreate, usuario: CurrentUser) -> Investor:
+    """Puntúa sus respuestas contra la BD y le asigna perfil.
 
     El perfilamiento se adjunta a un `profiles` que YA existe (el que creó el registro).
     Crear acá una segunda fila —como se hacía antes— dejaba al cliente con dos identidades:
@@ -113,13 +135,22 @@ async def create_investor_profile(
                 detail="El usuario del token no existe como inversionista.",
             )
 
+        # El monto de una subcuenta nunca puede pasarse del capital sin asignar. La
+        # validación vive acá, en el servidor y dentro de la transacción: dos pestañas
+        # abiertas no pueden repartirse el mismo dinero dos veces. En el front el aviso
+        # es una cortesía; acá es la regla.
+        _exige_capital_disponible(conn, str(investor["id"]), payload.monto)
+
+        nombre_subcuenta = (payload.nombre_subcuenta or "").strip() or None
+
         session = conn.execute(
             """
-            insert into public.profiling_sessions (investor_id, rules_version_id, amount)
-            values (%s, %s, %s)
+            insert into public.profiling_sessions
+                (investor_id, rules_version_id, amount, subaccount_name)
+            values (%s, %s, %s, %s)
             returning id
             """,
-            (investor["id"], rv["id"], payload.monto),
+            (investor["id"], rv["id"], payload.monto, nombre_subcuenta),
         ).fetchone()
 
         detalles: list[RespuestaDetalle] = []
@@ -199,6 +230,15 @@ async def create_investor_profile(
             (total, perfil["id"], session["id"]),
         )
 
+        maximo = conn.execute(
+            """
+            select max(max_score) as puntaje_max
+            from public.profile_thresholds
+            where rules_version_id = %s
+            """,
+            (rv["id"],),
+        ).fetchone()
+
         return Investor(
             investor_id=str(investor["id"]),
             session_id=str(session["id"]),
@@ -206,6 +246,7 @@ async def create_investor_profile(
             email=investor["email"],
             cedula_ruc=investor["cedula_ruc"],
             puntaje=total,
+            puntaje_max=maximo["puntaje_max"],
             perfil_riesgo=PerfilRiesgo(perfil["code"]),
             respuestas=detalles,
             monto=float(payload.monto),
@@ -213,20 +254,29 @@ async def create_investor_profile(
         )
 
 
-async def get_investor(investor_id: str) -> Investor:
-    """Lee el inversionista con su sesión de perfilamiento más reciente."""
+async def get_investor(investor_id: str, session_id: str | None = None) -> Investor:
+    """Lee el inversionista en una de sus sesiones de perfilamiento.
+
+    Sin `session_id` devuelve la más reciente — que es lo que la app de una sola cartera
+    siempre pidió, y por eso el parámetro es opcional: agregar subcuentas no rompe al
+    cliente que no las conoce. Con `session_id` devuelve esa subcuenta concreta.
+    """
     fila = fetch_one(
         """
         select p.id as investor_id, p.full_name, p.email, p.cedula_ruc, p.created_at,
-               s.id as session_id, s.total_score, s.amount, rp.code as perfil_code
+               s.id as session_id, s.total_score, s.amount, rp.code as perfil_code,
+               (select max(pt.max_score)
+                  from public.profile_thresholds pt
+                 where pt.rules_version_id = s.rules_version_id) as puntaje_max
         from public.profiles p
         join public.profiling_sessions s on s.investor_id = p.id
         left join public.risk_profiles rp on rp.id = s.risk_profile_id
         where p.id = %s and p.role = 'investor'
+          and (%s::uuid is null or s.id = %s::uuid)
         order by s.created_at desc
         limit 1
         """,
-        (investor_id,),
+        (investor_id, session_id, session_id),
     )
 
     if not fila or fila["perfil_code"] is None:
@@ -256,11 +306,180 @@ async def get_investor(investor_id: str) -> Investor:
         email=fila["email"],
         cedula_ruc=fila["cedula_ruc"],
         puntaje=fila["total_score"],
+        puntaje_max=fila["puntaje_max"],
         perfil_riesgo=PerfilRiesgo(fila["perfil_code"]),
         respuestas=[RespuestaDetalle(**r) for r in respuestas],
         monto=fila["amount"],
         created_at=fila["created_at"],
     )
+
+
+# ===========================================================================
+# Subcuentas y capital
+# ===========================================================================
+
+
+def _asignado(conn: Connection, investor_id: str) -> float:
+    """Lo que el inversionista ya repartió: la suma de los montos de sus subcuentas."""
+    fila = conn.execute(
+        """
+        select coalesce(sum(amount), 0)::float as asignado
+        from public.profiling_sessions
+        where investor_id = %s and completed_at is not null
+        """,
+        (investor_id,),
+    ).fetchone()
+    return fila["asignado"]
+
+
+def _exige_capital_disponible(
+    conn: Connection, investor_id: str, monto: Decimal
+) -> None:
+    """422 si la subcuenta nueva se pasa del capital sin asignar.
+
+    El `for update` bloquea la fila del inversionista hasta el fin de la transacción: dos
+    peticiones simultáneas del mismo cliente se serializan, así que no pueden leer las dos
+    el mismo "sin asignar" y repartirse el mismo dinero dos veces.
+
+    Si nunca declaró un capital total no hay techo contra el cual validar, y el
+    perfilamiento pasa: es el caso de la app de una sola cartera.
+    """
+    fila = conn.execute(
+        """
+        select total_capital::float as capital
+        from public.profiles
+        where id = %s
+        for update
+        """,
+        (investor_id,),
+    ).fetchone()
+
+    capital = fila["capital"] if fila else None
+    if capital is None:
+        return
+
+    disponible = capital - _asignado(conn, investor_id)
+    if float(monto) > disponible:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"El monto excede tu capital sin asignar: quedan USD {disponible:,.2f} "
+                f"de un capital total de USD {capital:,.2f}."
+            ),
+        )
+
+
+async def listar_subcuentas(investor_id: str) -> ResumenCapital:
+    """Las subcuentas del inversionista y cómo reparten su capital.
+
+    Cada fila es una `profiling_session` completada con su propuesta. El instrumento
+    principal y el retorno esperado los calcula Postgres sobre `proposal_items`: son
+    los mismos números que ya se ven en la propuesta, no una segunda versión de ellos.
+    """
+    filas = fetch_all(
+        """
+        select s.id::text          as session_id,
+               s.subaccount_name   as nombre,
+               s.amount::float     as monto,
+               s.total_score       as puntaje,
+               (select max(pt.max_score)
+                  from public.profile_thresholds pt
+                 where pt.rules_version_id = s.rules_version_id) as puntaje_max,
+               rp.code             as perfil,
+               pr.id::text         as proposal_id,
+               pr.status           as estado,
+               top.nombre          as instrumento_principal,
+               ret.retorno         as retorno_esperado_anual
+        from public.profiling_sessions s
+        join public.risk_profiles rp on rp.id = s.risk_profile_id
+        left join public.proposals pr on pr.session_id = s.id
+        -- el de mayor porcentaje: el que define de qué se trata la subcuenta
+        left join lateral (
+            select i.name as nombre
+            from public.proposal_items pi
+            join public.instruments i on i.id = pi.instrument_id
+            where pi.proposal_id = pr.id
+            order by pi.percentage desc
+            limit 1
+        ) top on true
+        left join lateral (
+            select round(sum(pi.percentage * i.expected_return) / 100.0, 3)::float as retorno
+            from public.proposal_items pi
+            join public.instruments i on i.id = pi.instrument_id
+            where pi.proposal_id = pr.id
+        ) ret on true
+        where s.investor_id = %s and s.completed_at is not null
+        order by s.created_at
+        """,
+        (investor_id,),
+    )
+
+    subcuentas = [
+        Subcuenta(
+            session_id=f["session_id"],
+            proposal_id=f["proposal_id"],
+            # Las sesiones anteriores a las subcuentas no tienen nombre: se numeran por
+            # orden de creación en vez de mostrarse en blanco.
+            nombre=f["nombre"] or f"Subcuenta {i}",
+            monto=f["monto"],
+            perfil=PerfilRiesgo(f["perfil"]),
+            puntaje=f["puntaje"],
+            puntaje_max=f["puntaje_max"],
+            estado=EstadoPropuesta(f["estado"]) if f["estado"] else None,
+            instrumento_principal=f["instrumento_principal"],
+            retorno_esperado_anual=f["retorno_esperado_anual"],
+        )
+        for i, f in enumerate(filas, start=1)
+    ]
+
+    asignado = round(sum(s.monto for s in subcuentas), 2)
+
+    techo = fetch_one(
+        "select total_capital::float as capital from public.profiles where id = %s",
+        (investor_id,),
+    )
+    capital = techo["capital"] if techo else None
+
+    return ResumenCapital(
+        capital_total=capital,
+        asignado=asignado,
+        # None, no 0: "no declaró su capital" y "lo tiene todo invertido" son cosas
+        # distintas, y la pantalla las dibuja distinto.
+        sin_asignar=round(capital - asignado, 2) if capital is not None else None,
+        subcuentas=subcuentas,
+    )
+
+
+async def fijar_capital(investor_id: str, payload: CapitalUpdate) -> ResumenCapital:
+    """Fija el techo de capital del inversionista y devuelve el reparto actualizado.
+
+    No puede quedar por debajo de lo que ya está asignado: eso dejaría un `sin_asignar`
+    negativo, es decir, una cartera que promete más plata de la que el cliente declaró.
+
+    Leer y escribir en la misma transacción (con la fila del perfil bloqueada) evita que
+    entre la comprobación y el update se cuele una subcuenta nueva que invalide la cuenta.
+    """
+    with get_connection() as conn:
+        conn.execute(
+            "select id from public.profiles where id = %s for update", (investor_id,)
+        )
+        asignado = _asignado(conn, investor_id)
+
+        if float(payload.capital_total) < asignado:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"Ya tienes USD {asignado:,.2f} asignados en tus subcuentas: el "
+                    "capital total no puede ser menor que eso."
+                ),
+            )
+
+        conn.execute(
+            "update public.profiles set total_capital = %s where id = %s",
+            (payload.capital_total, investor_id),
+        )
+
+    return await listar_subcuentas(investor_id)
 
 
 # ===========================================================================
@@ -482,13 +701,18 @@ def _guardar_interaccion(
     )
 
 
-async def get_portfolio_proposal(investor_id: str) -> PortfolioProposal:
+async def get_portfolio_proposal(
+    investor_id: str, session_id: str | None = None
+) -> PortfolioProposal:
     """Devuelve la propuesta del inversionista, generándola la primera vez.
 
     La propuesta se guarda (proposals + proposal_items): es un snapshot inmutable
     que el asesor revisará en la HU3, así que no se regenera en cada GET.
+
+    `session_id` elige la subcuenta. Sin él sigue siendo la sesión más reciente, que es
+    lo que la app de una sola cartera siempre pidió.
     """
-    investor = await get_investor(investor_id)
+    investor = await get_investor(investor_id, session_id)
 
     with get_connection() as conn:
         existente = conn.execute(
@@ -507,6 +731,7 @@ async def get_portfolio_proposal(investor_id: str) -> PortfolioProposal:
                 session_id=investor.session_id,
                 perfil_riesgo=investor.perfil_riesgo,
                 puntaje=investor.puntaje,
+                puntaje_max=investor.puntaje_max,
                 riesgo_esperado=NivelRiesgo(existente["expected_risk"]),
                 estado=EstadoPropuesta(existente["status"]),
                 monto_total=existente["total_amount"],
@@ -593,6 +818,7 @@ async def get_portfolio_proposal(investor_id: str) -> PortfolioProposal:
             session_id=investor.session_id,
             perfil_riesgo=investor.perfil_riesgo,
             puntaje=investor.puntaje,
+            puntaje_max=investor.puntaje_max,
             riesgo_esperado=riesgo,
             estado=EstadoPropuesta(proposal["status"]),
             monto_total=proposal["total_amount"],

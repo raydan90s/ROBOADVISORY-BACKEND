@@ -14,6 +14,7 @@ from src.routes.advisor_routes import router as advisor_router
 from src.routes.agent_routes import router as agent_router
 from src.routes.audit_routes import router as audit_router
 from src.routes.auth_routes import router as auth_router
+from src.routes.catalog_routes import router as catalog_router
 from src.routes.investor_routes import router as investor_router
 
 
@@ -46,6 +47,7 @@ app.include_router(auth_router)
 app.include_router(investor_router)
 app.include_router(advisor_router)
 app.include_router(audit_router)
+app.include_router(catalog_router)
 app.include_router(agent_router)
 
 
