@@ -26,3 +26,9 @@ langgraph==0.2.60
 langchain-core==0.3.28
 langchain-google-genai==2.0.7
 google-generativeai==0.8.3
+
+# Proveedores adicionales de IA (intercambiables desde AI_PROVIDER en el .env).
+# Están aquí para que cambiar de modelo sea solo configuración; si no los usas, no
+# molestan (se importan de forma perezosa en llm_provider.py).
+langchain-openai==0.2.14
+langchain-anthropic==0.3.0

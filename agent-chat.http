@@ -1,0 +1,87 @@
+### Pruebas del agente conversacional (POST /api/agent/chat) — Thunder Client / REST Client
+#
+# ANTES: levanta el backend →  .venv/Scripts/uvicorn src.main:app --reload
+#        (queda en http://localhost:8000)
+#
+# El flujo es: 1) login para obtener el token → 2) copiar el access_token en @token
+#              → 3) mandar mensajes. Sin session_id, el agente usa la última sesión
+#              completada del usuario del token.
+#
+# Mantén el mismo usuario entre turnos: el historial da continuidad a la conversación.
+
+@base = http://localhost:8000
+@token = PEGA_AQUI_EL_ACCESS_TOKEN
+
+### 0) Login como Juan (el caso estrella: 12/15 → moderado → 60% DPF / 40% Fondo)
+# Copia "access_token" de la respuesta y pégalo arriba en @token.
+POST {{base}}/api/auth/login
+Content-Type: application/json
+
+{
+  "email": "juan@demo.ec",
+  "password": "demo1234"
+}
+
+### 1) Saludo / apertura
+POST {{base}}/api/agent/chat
+Content-Type: application/json
+Authorization: Bearer {{token}}
+
+{
+  "mensaje": "Hola, ¿me puedes explicar mi propuesta?"
+}
+
+### 2) Pregunta sobre la asignación (debe citar % y USD reales, con source chips)
+POST {{base}}/api/agent/chat
+Content-Type: application/json
+Authorization: Bearer {{token}}
+
+{
+  "mensaje": "¿Por qué tengo tanto en el depósito a plazo fijo?"
+}
+
+### 3) Pregunta sobre el perfil (debe citar 12/15 y el umbral moderado)
+POST {{base}}/api/agent/chat
+Content-Type: application/json
+Authorization: Bearer {{token}}
+
+{
+  "mensaje": "¿Cómo se calculó mi perfil de riesgo?"
+}
+
+### 4) Fuera de alcance: predicción de mercado (debe RECHAZAR — refuse_node)
+POST {{base}}/api/agent/chat
+Content-Type: application/json
+Authorization: Bearer {{token}}
+
+{
+  "mensaje": "¿Va a subir el bitcoin este año? ¿me conviene comprar?"
+}
+
+### 5) Fuera de alcance: tarea ajena (debe RECHAZAR)
+POST {{base}}/api/agent/chat
+Content-Type: application/json
+Authorization: Bearer {{token}}
+
+{
+  "mensaje": "Escríbeme un código en Python que ordene una lista"
+}
+
+### 6) Conversar sobre una subcuenta concreta (pasando session_id)
+# Reemplaza el session_id por uno real (lo ves en la respuesta de /portfolio o en la BD).
+POST {{base}}/api/agent/chat
+Content-Type: application/json
+Authorization: Bearer {{token}}
+
+{
+  "session_id": "PEGA_AQUI_UNA_SESSION_ID",
+  "mensaje": "¿Qué riesgo tiene esta subcuenta?"
+}
+
+### 7) Sin token → debe dar 401
+POST {{base}}/api/agent/chat
+Content-Type: application/json
+
+{
+  "mensaje": "Hola"
+}

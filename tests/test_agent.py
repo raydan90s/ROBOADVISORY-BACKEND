@@ -115,7 +115,7 @@ def test_el_contexto_permitido_sale_de_los_datos() -> None:
 @pytest.mark.asyncio
 async def test_si_gemini_alucina_dos_veces_se_usa_la_plantilla() -> None:
     """⭐ La garantía central: nunca se le muestra al usuario un número que la IA inventó."""
-    with patch.object(ai_agent.settings, "GEMINI_API_KEY", "fake-key"), patch.object(
+    with patch.object(ai_agent, "hay_api_key", lambda: True), patch.object(
         ai_agent, "_generar_con_gemini", return_value=TEXTO_ALUCINADO
     ) as llm:
         expl: Explicacion = await redactar_explicacion(DATOS)
@@ -131,7 +131,7 @@ async def test_si_gemini_alucina_dos_veces_se_usa_la_plantilla() -> None:
 @pytest.mark.asyncio
 async def test_si_gemini_se_cae_la_app_sigue_funcionando() -> None:
     """La demo no se rompe porque la API de Gemini esté caída o sin cuota."""
-    with patch.object(ai_agent.settings, "GEMINI_API_KEY", "fake-key"), patch.object(
+    with patch.object(ai_agent, "hay_api_key", lambda: True), patch.object(
         ai_agent, "_generar_con_gemini", side_effect=RuntimeError("429 quota exceeded")
     ):
         expl = await redactar_explicacion(DATOS)
@@ -144,7 +144,7 @@ async def test_si_gemini_se_cae_la_app_sigue_funcionando() -> None:
 @pytest.mark.asyncio
 async def test_si_gemini_responde_bien_se_usa_su_texto() -> None:
     """El contrapeso: si la plantilla ganara siempre, los tests de arriba no probarían nada."""
-    with patch.object(ai_agent.settings, "GEMINI_API_KEY", "fake-key"), patch.object(
+    with patch.object(ai_agent, "hay_api_key", lambda: True), patch.object(
         ai_agent, "_generar_con_gemini", return_value=TEXTO_FIEL
     ) as llm:
         expl = await redactar_explicacion(DATOS)
@@ -169,7 +169,7 @@ async def test_el_reintento_le_dice_al_modelo_que_hizo_mal() -> None:
             assert any("Banco Fantasma" in c for c in [correccion])
         return texto
 
-    with patch.object(ai_agent.settings, "GEMINI_API_KEY", "fake-key"), patch.object(
+    with patch.object(ai_agent, "hay_api_key", lambda: True), patch.object(
         ai_agent, "_generar_con_gemini", side_effect=_fake
     ):
         expl = await redactar_explicacion(DATOS)
@@ -180,7 +180,7 @@ async def test_el_reintento_le_dice_al_modelo_que_hizo_mal() -> None:
 
 @pytest.mark.asyncio
 async def test_sin_api_key_no_se_llama_a_gemini() -> None:
-    with patch.object(ai_agent.settings, "GEMINI_API_KEY", ""), patch.object(
+    with patch.object(ai_agent, "hay_api_key", lambda: False), patch.object(
         ai_agent, "_generar_con_gemini"
     ) as llm:
         expl = await redactar_explicacion(DATOS)

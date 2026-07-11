@@ -19,8 +19,29 @@ class Settings(BaseSettings):
     # (429 "limit: 0", que no es "te pasaste" sino "este modelo no está habilitado").
     # `gemini-flash-latest` sí responde. Si cambias de clave, verifica el modelo con:
     #   curl ".../v1beta/models/<modelo>:generateContent?key=$GEMINI_API_KEY" -d '{...}'
+    # Proveedor de IA activo. Se cambia el modelo del asistente SOLO con esta variable:
+    # "google" | "openai" | "anthropic". Cada uno lee su propia API key y su modelo de
+    # abajo. Si el proveedor elegido no tiene key, el agente cae a la explicación
+    # determinista (la demo nunca se rompe). Ver src/services/llm_provider.py.
+    AI_PROVIDER: str = "google"
+    # Temperatura común a todos los proveedores. Baja: fidelidad a los datos, no creatividad.
+    AI_TEMPERATURE: float = 0.2
+
+    # --- Google Gemini ---
+    # `gemini-flash-latest` resuelve hoy a `gemini-3.5-flash`, cuyo free tier es de
+    # solo 20 requests/día y se agota rápido. `gemini-flash-lite-latest` tiene cuota
+    # gratis aparte y responde bien para redactar (verificado 11-jul). Si cambias de
+    # clave, revisa la cuota por modelo antes de grabar la demo.
     GEMINI_API_KEY: str = ""
-    GEMINI_MODEL: str = "gemini-flash-latest"
+    GEMINI_MODEL: str = "gemini-flash-lite-latest"
+
+    # --- OpenAI (opcional; requiere `pip install langchain-openai`) ---
+    OPENAI_API_KEY: str = ""
+    OPENAI_MODEL: str = "gpt-4o-mini"
+
+    # --- Anthropic (opcional; requiere `pip install langchain-anthropic`) ---
+    ANTHROPIC_API_KEY: str = ""
+    ANTHROPIC_MODEL: str = "claude-haiku-4-5"
 
     # Auth: firma de los JWT. En producción es obligatorio ponerlo en el entorno
     # (Render); si se queda el default, los tokens de todos los despliegues serían
