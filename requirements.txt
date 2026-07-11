@@ -1,0 +1,17 @@
+# --- API ---
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+pydantic-settings==2.7.0
+
+# --- Base de datos ---
+supabase==2.11.0
+
+# --- Entorno ---
+python-dotenv==1.0.1
+
+# --- IA: Agente / Máquina de estados ---
+langgraph==0.2.60
+langchain-core==0.3.28
+langchain-google-genai==2.0.7
+google-generativeai==0.8.3
