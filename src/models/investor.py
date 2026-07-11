@@ -5,7 +5,8 @@ uno allá, cámbialo aquí. Los porcentajes y puntajes NUNCA los inventa el LLM;
 salen de scoring_rules / profile_thresholds / allocation_template_items.
 """
 
-from datetime import datetime
+from datetime import date, datetime
+from decimal import Decimal
 from enum import Enum
 
 from pydantic import BaseModel, Field
@@ -64,6 +65,10 @@ class InvestorProfileCreate(BaseModel):
     email: str | None = None
     cedula_ruc: str | None = None
 
+    # Sin monto la propuesta son porcentajes flotando en el aire. El ejemplo del reto
+    # muestra "60% (USD 12.000)", y esos USD los calcula Postgres, no el LLM.
+    monto: Decimal = Field(..., gt=0, max_digits=14, decimal_places=2)
+
     # {question_code: option_code}, ej. {"objetivo": "crecer", "horizonte": "largo"}
     # Los códigos válidos salen de GET /api/investor/questions.
     # El puntaje no viaja desde el cliente: lo calcula la BD vía scoring_rules.
@@ -93,6 +98,9 @@ class Investor(BaseModel):
     perfil_riesgo: PerfilRiesgo
     respuestas: list[RespuestaDetalle] = Field(default_factory=list)
 
+    # El monto que declaró en el cuestionario. None solo en sesiones viejas.
+    monto: float | None = None
+
     created_at: datetime | None = None
 
 
@@ -102,7 +110,12 @@ class Investor(BaseModel):
 
 
 class AssetAllocation(BaseModel):
-    """Una línea del portafolio, tomada de allocation_template_items + instruments."""
+    """Una línea del portafolio: producto + emisor + calificación + USD asignados.
+
+    Los USD (`monto_asignado`) los calcula Postgres a partir del porcentaje y del monto
+    total. La calificación viaja siempre con su fuente y su fecha: mostrarla sin ellas
+    sería presentar como vigente un dato que es referencial.
+    """
 
     instrumento_code: str
     nombre: str
@@ -110,6 +123,14 @@ class AssetAllocation(BaseModel):
     riesgo: NivelRiesgo
     porcentaje: float = Field(..., gt=0, le=100)
     retorno_esperado: float | None = None
+
+    monto_asignado: float | None = None
+    plazo_dias: int | None = None
+
+    institucion: str | None = None
+    calificacion: str | None = None
+    calificacion_fuente: str | None = None
+    calificacion_fecha: date | None = None
 
 
 class PortfolioProposal(BaseModel):
@@ -123,6 +144,8 @@ class PortfolioProposal(BaseModel):
     puntaje: int
     riesgo_esperado: NivelRiesgo
     estado: EstadoPropuesta
+
+    monto_total: float | None = None
 
     allocations: list[AssetAllocation] = Field(default_factory=list)
     # Promedio ponderado de instruments.expected_return. Ficticio, solo demo.

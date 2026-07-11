@@ -10,6 +10,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from src.config.database import fetch_one, get_pool
 from src.config.settings import settings
+from src.routes.advisor_routes import router as advisor_router
+from src.routes.audit_routes import router as audit_router
 from src.routes.auth_routes import router as auth_router
 from src.routes.investor_routes import router as investor_router
 
@@ -41,6 +43,8 @@ app.add_middleware(
 
 app.include_router(auth_router)
 app.include_router(investor_router)
+app.include_router(advisor_router)
+app.include_router(audit_router)
 
 
 @app.get("/health", tags=["health"])

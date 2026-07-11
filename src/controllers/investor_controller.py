@@ -5,6 +5,7 @@ y salen de la base (scoring_rules, profile_thresholds, allocation_template_items
 El LLM solo redacta la explicación en lenguaje natural.
 """
 
+from decimal import Decimal
 from typing import Any
 
 from fastapi import HTTPException, status
@@ -26,7 +27,7 @@ from src.models.investor import (
     ProfilingBreakdown,
     RespuestaDetalle,
 )
-from src.services.ai_agent import redactar_explicacion
+from src.services.ai_agent import DatosExplicacion, Explicacion, redactar_explicacion
 
 
 def _rules_version_activa(conn: Connection) -> dict[str, Any]:
@@ -99,11 +100,11 @@ async def create_investor_profile(payload: InvestorProfileCreate) -> Investor:
 
         session = conn.execute(
             """
-            insert into public.profiling_sessions (investor_id, rules_version_id)
-            values (%s, %s)
+            insert into public.profiling_sessions (investor_id, rules_version_id, amount)
+            values (%s, %s, %s)
             returning id
             """,
-            (investor["id"], rv["id"]),
+            (investor["id"], rv["id"], payload.monto),
         ).fetchone()
 
         detalles: list[RespuestaDetalle] = []
@@ -192,6 +193,7 @@ async def create_investor_profile(payload: InvestorProfileCreate) -> Investor:
             puntaje=total,
             perfil_riesgo=PerfilRiesgo(perfil["code"]),
             respuestas=detalles,
+            monto=float(payload.monto),
             created_at=investor["created_at"],
         )
 
@@ -201,7 +203,7 @@ async def get_investor(investor_id: str) -> Investor:
     fila = fetch_one(
         """
         select p.id as investor_id, p.full_name, p.email, p.cedula_ruc, p.created_at,
-               s.id as session_id, s.total_score, rp.code as perfil_code
+               s.id as session_id, s.total_score, s.amount, rp.code as perfil_code
         from public.profiles p
         join public.profiling_sessions s on s.investor_id = p.id
         left join public.risk_profiles rp on rp.id = s.risk_profile_id
@@ -241,6 +243,7 @@ async def get_investor(investor_id: str) -> Investor:
         puntaje=fila["total_score"],
         perfil_riesgo=PerfilRiesgo(fila["perfil_code"]),
         respuestas=[RespuestaDetalle(**r) for r in respuestas],
+        monto=fila["amount"],
         created_at=fila["created_at"],
     )
 
@@ -341,13 +344,28 @@ async def obtener_breakdown(
 
 
 def _allocations_de(conn: Connection, proposal_id: str) -> list[AssetAllocation]:
+    """Las líneas de la propuesta, con emisor, calificación (y su fuente) y los USD.
+
+    Todo sale de la base: el porcentaje de la plantilla, el USD que calculó Postgres y
+    la calificación del emisor con la calificadora y la fecha que la sustentan.
+    """
     filas = conn.execute(
         """
-        select i.code as instrumento_code, i.name as nombre, i.asset_class as clase_activo,
-               i.risk_class as riesgo, pi.percentage as porcentaje,
-               i.expected_return as retorno_esperado
+        select i.code            as instrumento_code,
+               i.name            as nombre,
+               i.asset_class     as clase_activo,
+               i.risk_class      as riesgo,
+               pi.percentage     as porcentaje,
+               pi.amount         as monto_asignado,
+               i.expected_return as retorno_esperado,
+               i.term_days       as plazo_dias,
+               inst.name          as institucion,
+               inst.credit_rating as calificacion,
+               inst.rating_source as calificacion_fuente,
+               inst.rating_date   as calificacion_fecha
         from public.proposal_items pi
-        join public.instruments i on i.id = pi.instrument_id
+        join public.instruments i         on i.id = pi.instrument_id
+        left join public.institutions inst on inst.id = i.institution_id
         where pi.proposal_id = %s
         order by pi.percentage desc
         """,
@@ -368,6 +386,87 @@ def _retorno_ponderado(allocations: list[AssetAllocation]) -> float | None:
     return round(sum(aportes) / 100, 3)
 
 
+def _datos_explicacion(
+    conn: Connection,
+    investor: Investor,
+    allocations: list[AssetAllocation],
+    riesgo: NivelRiesgo,
+    monto_total: Decimal | None,
+    retorno: float | None,
+) -> DatosExplicacion:
+    """Reúne TODO lo que el LLM tiene permitido citar. Fuera de esto, no existe.
+
+    Los umbrales y el puntaje máximo se leen de las reglas activas: son números que el
+    texto puede mencionar ("12 de 15 puntos"), así que tienen que entrar al conjunto
+    permitido del guardarraíl desde la base y no como constantes en el código.
+    """
+    reglas = conn.execute(
+        """
+        select rv.version_label,
+               pt.min_score,
+               pt.max_score,
+               (select max(pt2.max_score)
+                  from public.profile_thresholds pt2
+                 where pt2.rules_version_id = s.rules_version_id) as puntaje_max
+        from public.profiling_sessions s
+        join public.rules_versions rv     on rv.id = s.rules_version_id
+        left join public.profile_thresholds pt
+               on pt.rules_version_id = s.rules_version_id
+              and pt.risk_profile_id  = s.risk_profile_id
+        where s.id = %s
+        """,
+        (investor.session_id,),
+    ).fetchone()
+
+    return DatosExplicacion(
+        investor=investor,
+        allocations=allocations,
+        riesgo=riesgo,
+        monto_total=monto_total,
+        retorno_anual=retorno,
+        rules_version=reglas["version_label"],
+        umbral_min=reglas["min_score"],
+        umbral_max=reglas["max_score"],
+        puntaje_max=reglas["puntaje_max"],
+    )
+
+
+def _guardar_interaccion(
+    conn: Connection, session_id: str, proposal_id: str, expl: Explicacion
+) -> None:
+    """Evidencia del criterio #3: qué modelo escribió, si pasó el guardarraíl y con qué fuentes.
+
+    Se guardan los dos turnos (prompt y respuesta). Si el guardarraíl rechazó al modelo,
+    queda registrado en `guardrail_passed` y en los motivos: el rechazo es tan auditable
+    como el acierto.
+    """
+    conn.execute(
+        """
+        insert into public.llm_interactions
+            (session_id, proposal_id, role, content, model, platform)
+        values (%s, %s, 'user', %s, %s, 'api')
+        """,
+        (session_id, proposal_id, expl.prompt, expl.modelo),
+    )
+    conn.execute(
+        """
+        insert into public.llm_interactions
+            (session_id, proposal_id, role, content, model,
+             guardrail_passed, retry_count, metadata, platform)
+        values (%s, %s, 'assistant', %s, %s, %s, %s, %s, 'api')
+        """,
+        (
+            session_id,
+            proposal_id,
+            expl.texto,
+            expl.modelo,
+            expl.guardrail_passed,
+            expl.retry_count,
+            Jsonb({"sources": expl.sources, "guardrail_motivos": expl.motivos}),
+        ),
+    )
+
+
 async def get_portfolio_proposal(investor_id: str) -> PortfolioProposal:
     """Devuelve la propuesta del inversionista, generándola la primera vez.
 
@@ -378,7 +477,10 @@ async def get_portfolio_proposal(investor_id: str) -> PortfolioProposal:
 
     with get_connection() as conn:
         existente = conn.execute(
-            "select id, expected_risk, explanation, status from public.proposals where session_id = %s",
+            """
+            select id, expected_risk, explanation, status, total_amount
+            from public.proposals where session_id = %s
+            """,
             (investor.session_id,),
         ).fetchone()
 
@@ -392,6 +494,7 @@ async def get_portfolio_proposal(investor_id: str) -> PortfolioProposal:
                 puntaje=investor.puntaje,
                 riesgo_esperado=NivelRiesgo(existente["expected_risk"]),
                 estado=EstadoPropuesta(existente["status"]),
+                monto_total=existente["total_amount"],
                 allocations=allocations,
                 retorno_esperado_anual=_retorno_ponderado(allocations),
                 explicacion=existente["explanation"],
@@ -415,35 +518,51 @@ async def get_portfolio_proposal(investor_id: str) -> PortfolioProposal:
                 detail=f"No hay allocation_template para el perfil {investor.perfil_riesgo.value}.",
             )
 
+        # El monto se copia de la sesión a la propuesta: snapshot inmutable. Si el
+        # cliente se vuelve a perfilar con otro monto, esta propuesta no cambia.
         proposal = conn.execute(
             """
-            insert into public.proposals (session_id, template_id, expected_risk)
-            values (%s, %s, %s)
-            returning id, status
+            insert into public.proposals (session_id, template_id, expected_risk, total_amount)
+            select %s, %s, %s, s.amount
+            from public.profiling_sessions s
+            where s.id = %s
+            returning id, status, total_amount
             """,
-            (investor.session_id, plantilla["id"], plantilla["expected_risk"]),
+            (
+                investor.session_id,
+                plantilla["id"],
+                plantilla["expected_risk"],
+                investor.session_id,
+            ),
         ).fetchone()
 
         # Los porcentajes se copian tal cual de la plantilla: el LLM no los toca.
+        # Los USD los calcula Postgres — es el número que después tiene que estar en el
+        # set permitido del guardarraíl, así que no puede nacer en Python.
         conn.execute(
             """
-            insert into public.proposal_items (proposal_id, instrument_id, percentage)
-            select %s, ati.instrument_id, ati.percentage
+            insert into public.proposal_items (proposal_id, instrument_id, percentage, amount)
+            select p.id, ati.instrument_id, ati.percentage,
+                   round(p.total_amount * ati.percentage / 100.0, 2)
             from public.allocation_template_items ati
-            where ati.template_id = %s
+            cross join public.proposals p
+            where ati.template_id = %s and p.id = %s
             """,
-            (proposal["id"], plantilla["id"]),
+            (plantilla["id"], proposal["id"]),
         )
 
         allocations = _allocations_de(conn, proposal["id"])
         riesgo = NivelRiesgo(plantilla["expected_risk"])
         retorno = _retorno_ponderado(allocations)
 
-        explicacion = await redactar_explicacion(investor, allocations, riesgo, retorno)
+        explicacion = await redactar_explicacion(
+            _datos_explicacion(conn, investor, allocations, riesgo, proposal["total_amount"], retorno)
+        )
+        _guardar_interaccion(conn, investor.session_id, proposal["id"], explicacion)
 
         conn.execute(
             "update public.proposals set explanation = %s where id = %s",
-            (explicacion, proposal["id"]),
+            (explicacion.texto, proposal["id"]),
         )
         conn.execute(
             """
@@ -461,6 +580,7 @@ async def get_portfolio_proposal(investor_id: str) -> PortfolioProposal:
             puntaje=investor.puntaje,
             riesgo_esperado=riesgo,
             estado=EstadoPropuesta(proposal["status"]),
+            monto_total=proposal["total_amount"],
             allocations=allocations,
             retorno_esperado_anual=retorno,
             explicacion=explicacion,
