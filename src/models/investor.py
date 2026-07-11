@@ -130,3 +130,45 @@ class PortfolioProposal(BaseModel):
 
     # Único campo que redacta el LLM.
     explicacion: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# "¿Cómo se calculó?" (HU1, criterio 3)
+# ---------------------------------------------------------------------------
+
+
+class BreakdownRespuesta(BaseModel):
+    """Una fila de la tabla respuesta → puntos."""
+
+    question_code: str
+    question_text: str
+    option_code: str
+    option_label: str
+    puntos: int
+
+
+class ProfilingBreakdown(BaseModel):
+    """El desglose completo del puntaje: es la ComoSeCalculoPage, servida por la BD.
+
+    Trae la **versión de reglas** y los **umbrales** a la vista, y la regla de
+    elegibilidad por calificación de la institución. Nada de esto lo escribe el front:
+    si mañana cambian los puntos de una opción, la pantalla cambia sola.
+    """
+
+    session_id: str
+    investor_id: str
+
+    puntaje: int
+    monto: float | None = None
+    rules_version: str
+
+    perfil_code: PerfilRiesgo | None = None
+    perfil_nombre: str | None = None
+    umbral_min: int | None = None
+    umbral_max: int | None = None
+
+    # "Tu perfil admite instituciones hasta AA" — la regla, en las palabras de la BD.
+    regla_institucion: str | None = None
+    max_rating_tier: int | None = None
+
+    respuestas: list[BreakdownRespuesta] = Field(default_factory=list)

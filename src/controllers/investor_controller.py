@@ -14,6 +14,7 @@ from psycopg.types.json import Jsonb
 from src.config.database import fetch_all, fetch_one, get_connection
 from src.models.investor import (
     AssetAllocation,
+    BreakdownRespuesta,
     EstadoPropuesta,
     Investor,
     InvestorProfileCreate,
@@ -22,6 +23,7 @@ from src.models.investor import (
     Pregunta,
     OpcionPregunta,
     PortfolioProposal,
+    ProfilingBreakdown,
     RespuestaDetalle,
 )
 from src.services.ai_agent import redactar_explicacion
@@ -240,6 +242,96 @@ async def get_investor(investor_id: str) -> Investor:
         perfil_riesgo=PerfilRiesgo(fila["perfil_code"]),
         respuestas=[RespuestaDetalle(**r) for r in respuestas],
         created_at=fila["created_at"],
+    )
+
+
+# ===========================================================================
+# "¿Cómo se calculó?" (HU1, criterio 3)
+# ===========================================================================
+
+
+async def obtener_breakdown(
+    investor_id: str, session_id: str | None = None
+) -> ProfilingBreakdown:
+    """El desglose respuesta → puntos → umbral, tal como lo devuelve la vista.
+
+    Sin `session_id` toma la sesión completada más reciente (es lo que quiere el
+    inversionista). El asesor sí pasa el `session_id` que trae la cola: revisa una
+    propuesta concreta, y si el cliente se volvió a perfilar la última sesión ya no
+    es la que originó esa propuesta.
+    """
+    if session_id is None:
+        ultima = fetch_one(
+            """
+            select id::text as session_id
+            from public.profiling_sessions
+            where investor_id = %s and completed_at is not null
+            order by created_at desc
+            limit 1
+            """,
+            (investor_id,),
+        )
+        if not ultima:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"No existe un perfilamiento completo para el inversionista {investor_id}",
+            )
+        session_id = ultima["session_id"]
+
+    filas = fetch_all(
+        """
+        select session_id::text  as session_id,
+               investor_id::text as investor_id,
+               total_score,
+               amount,
+               rules_version,
+               risk_profile_code,
+               risk_profile_name,
+               question_code,
+               question_text,
+               option_code,
+               option_label,
+               points_awarded,
+               profile_min_score,
+               profile_max_score,
+               max_rating_tier,
+               institution_rule
+        from public.v_profiling_breakdown
+        where session_id = %s and investor_id = %s
+        order by order_index
+        """,
+        (session_id, investor_id),
+    )
+
+    if not filas:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No hay un desglose para la sesión {session_id} de {investor_id}.",
+        )
+
+    cabecera = filas[0]
+    return ProfilingBreakdown(
+        session_id=cabecera["session_id"],
+        investor_id=cabecera["investor_id"],
+        puntaje=cabecera["total_score"],
+        monto=cabecera["amount"],
+        rules_version=cabecera["rules_version"],
+        perfil_code=cabecera["risk_profile_code"],
+        perfil_nombre=cabecera["risk_profile_name"],
+        umbral_min=cabecera["profile_min_score"],
+        umbral_max=cabecera["profile_max_score"],
+        regla_institucion=cabecera["institution_rule"],
+        max_rating_tier=cabecera["max_rating_tier"],
+        respuestas=[
+            BreakdownRespuesta(
+                question_code=f["question_code"],
+                question_text=f["question_text"],
+                option_code=f["option_code"],
+                option_label=f["option_label"],
+                puntos=f["points_awarded"],
+            )
+            for f in filas
+        ],
     )
 
 
