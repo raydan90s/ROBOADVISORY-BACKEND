@@ -154,16 +154,20 @@ def validar_lexico(texto: str) -> Veredicto:
 _PRODUCTO = re.compile(
     r"\b(?:Dep[óo]sito|DPF|Fondo)\b[^,.;:()\n]*", re.IGNORECASE
 )
-# Un emisor inventado casi siempre se llama "Banco ..." / "Cooperativa ...". Los emisores
-# reales que no siguen ese patrón (Produbanco) se validan igual: si el nombre está en el
-# catálogo no hay nada que reportar, y si no está, no lo capturamos como emisor.
+# Un emisor inventado casi siempre se llama "Banco ..." / "Cooperativa ...". El nombre
+# puede llevar conectores en minúscula ("Banco del Pacífico"), así que hay que aceptarlos:
+# sin ellos, "Banco del Banco Falso" se escaparía por no empezar en mayúscula.
+# Los emisores reales que no siguen el patrón (Produbanco) se validan igual: si el nombre
+# está en el catálogo no hay nada que reportar, y si no está, no lo capturamos como emisor.
 _EMISOR = re.compile(
-    r"\b(?:Banco|Cooperativa|Mutualista)\s+[A-ZÁÉÍÓÚÑ][\wÁÉÍÓÚÑáéíóúñ]*"
-    r"(?:\s+(?:de|del|la)?\s*[A-ZÁÉÍÓÚÑ][\wÁÉÍÓÚÑáéíóúñ]*)*"
+    r"\b(?:Banco|Cooperativa|Mutualista)"
+    r"(?:\s+(?:de|del|la|los|el)\b|\s+[A-ZÁÉÍÓÚÑ][\wÁÉÍÓÚÑáéíóúñ]*)+"
 )
 # Solo calificaciones de 2+ letras (AA, AAA, con signo). Una "A" suelta no se busca a
 # propósito: en español una oración puede empezar con "A" y sería un falso positivo.
-_CALIFICACION = re.compile(r"\b(?:AAA|AA)[+-]?\b")
+# El cierre es un lookahead, no un \b: tras un '+' el \b no existe y "AA+" se leería
+# como "AA" — es decir, una calificación inventada se reportaría como otra distinta.
+_CALIFICACION = re.compile(r"\b(?:AAA|AA)[+-]?(?![\w+-])")
 
 
 def _plano(texto: str) -> str:

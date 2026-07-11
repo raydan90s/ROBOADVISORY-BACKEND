@@ -33,6 +33,16 @@ DISCLAIMER = (
 )
 
 
+def _usd(monto: Decimal | float) -> str:
+    """Formato ecuatoriano: USD 12.000 (el punto separa miles).
+
+    Importa más de lo que parece: `validar_numeros` lee '12,000' como doce mil solo por
+    convención, y mezclar los dos formatos en un mismo texto es pedirle al guardarraíl que
+    adivine. La app escribe un solo formato, siempre.
+    """
+    return f"USD {monto:,.0f}".replace(",", ".")
+
+
 @dataclass(frozen=True)
 class DatosExplicacion:
     """Todo lo que la base sabe de la propuesta. El LLM no ve nada más que esto."""
@@ -114,7 +124,7 @@ def fuentes(d: DatosExplicacion) -> list[dict]:
             "table": "proposal_items",
             "record_id": a.instrumento_code,
             "label": f"{a.nombre} · {a.porcentaje:g}%"
-            + (f" · USD {a.monto_asignado:,.0f}" if a.monto_asignado is not None else ""),
+            + (f" · {_usd(a.monto_asignado)}" if a.monto_asignado is not None else ""),
         }
         for a in d.allocations
     ]
@@ -134,7 +144,7 @@ def fuentes(d: DatosExplicacion) -> list[dict]:
 
 
 def _linea(a: AssetAllocation) -> str:
-    monto = f" (USD {a.monto_asignado:,.0f})".replace(",", ".") if a.monto_asignado else ""
+    monto = f" ({_usd(a.monto_asignado)})" if a.monto_asignado else ""
     emisor = f" de {a.institucion}" if a.institucion else ""
     rating = f" ({a.calificacion})" if a.calificacion else ""
     return f"{a.porcentaje:g}%{monto} en {a.nombre}{emisor}{rating}"
@@ -146,11 +156,7 @@ def explicacion_determinista(d: DatosExplicacion) -> str:
     Pasa el guardarraíl por construcción: cada número que escribe sale de `d`.
     """
     inv = d.investor
-    monto = (
-        f"Sobre un monto de USD {d.monto_total:,.0f}".replace(",", ".") + ", "
-        if d.monto_total is not None
-        else ""
-    )
+    monto = f"Sobre un monto de {_usd(d.monto_total)}, " if d.monto_total is not None else ""
     cartera = "; ".join(_linea(a) for a in d.allocations)
 
     return (
@@ -173,12 +179,19 @@ en español claro una propuesta que YA fue calculada por el motor de reglas del 
 REGLAS ABSOLUTAS (si rompes una, tu respuesta se descarta):
 1. NO inventes ni recalcules NINGÚN número. Usa exclusivamente las cifras de los DATOS.
    No sumes, no estimes, no redondees a otra cifra, no cites fechas ni años.
-2. NO menciones ningún producto, banco ni calificación que no esté en los DATOS.
-3. NUNCA prometas rentabilidad ni niegues el riesgo. Prohibido: "garantizado", "seguro",
+2. Si necesitas contar algo ("los 2 productos", "las 3 opciones"), escribe el conteo CON
+   LETRAS: «los dos productos», «las tres opciones». Un conteo no está en los DATOS, y
+   cualquier dígito que no esté en los DATOS hace que tu respuesta se descarte.
+3. NO menciones ningún producto, banco ni calificación que no esté en los DATOS.
+4. COPIA el nombre de cada producto EXACTAMENTE como aparece en los DATOS, entero y sin
+   abreviar. Si dice «Depósito a Plazo Fijo 360 días», escribe «Depósito a Plazo Fijo 360
+   días» — no «Depósito a Plazo Fijo», ni «el DPF». Recortar el nombre lo convierte en un
+   producto que no existe en el catálogo y tu respuesta se descarta.
+5. NUNCA prometas rentabilidad ni niegues el riesgo. Prohibido: "garantizado", "seguro",
    "sin riesgo", "vas a ganar". Los retornos son referenciales, no promesas.
-4. Escribe los montos en formato ecuatoriano: USD 12.000 (el punto separa miles).
-5. Máximo 130 palabras, tono cercano, tuteando. No uses listas ni markdown: un solo párrafo.
-6. Explica POR QUÉ esa cartera encaja con las respuestas del cliente, y menciona el emisor
+6. Escribe los montos en formato ecuatoriano: USD 12.000 (el punto separa miles).
+7. Máximo 130 palabras, tono cercano, tuteando. No uses listas ni markdown: un solo párrafo.
+8. Explica POR QUÉ esa cartera encaja con las respuestas del cliente, y menciona el emisor
    de cada producto con su calificación."""
 
 
@@ -189,14 +202,12 @@ def _prompt(d: DatosExplicacion) -> str:
     productos = "\n".join(
         f"- {a.nombre} ({a.institucion}, calificación {a.calificacion}): "
         f"{a.porcentaje:g}%"
-        + (f", USD {a.monto_asignado:,.0f}".replace(",", ".") if a.monto_asignado is not None else "")
+        + (f", {_usd(a.monto_asignado)}" if a.monto_asignado is not None else "")
         + (f", plazo {a.plazo_dias} días" if a.plazo_dias is not None else ", sin plazo fijo")
         + (f", retorno referencial {a.retorno_esperado:g}%" if a.retorno_esperado is not None else "")
         for a in d.allocations
     )
-    monto = (
-        f"USD {d.monto_total:,.0f}".replace(",", ".") if d.monto_total is not None else "no declarado"
-    )
+    monto = _usd(d.monto_total) if d.monto_total is not None else "no declarado"
 
     return f"""DATOS (son los ÚNICOS números que puedes usar):
 Cliente: {d.investor.nombre}

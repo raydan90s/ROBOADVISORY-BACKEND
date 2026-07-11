@@ -59,15 +59,20 @@ class Pregunta(BaseModel):
 
 
 class InvestorProfileCreate(BaseModel):
-    """Body del POST /api/investor/profile."""
+    """Body del POST /api/investor/profile.
 
-    nombre: str = Field(..., min_length=2, max_length=120)
-    email: str | None = None
-    cedula_ruc: str | None = None
+    El endpoint es autenticado: el perfilamiento se le adjunta al **usuario del token**.
+    Por eso acá no viajan ni el nombre ni el correo — dejar que el cliente los mandara
+    permitiría perfilar a nombre de otra persona.
+    """
 
     # Sin monto la propuesta son porcentajes flotando en el aire. El ejemplo del reto
     # muestra "60% (USD 12.000)", y esos USD los calcula Postgres, no el LLM.
     monto: Decimal = Field(..., gt=0, max_digits=14, decimal_places=2)
+
+    # La cédula no se pide en el registro; si el cliente la aporta al perfilarse, se
+    # completa en su perfil (nunca se sobrescribe una ya existente).
+    cedula_ruc: str | None = None
 
     # {question_code: option_code}, ej. {"objetivo": "crecer", "horizonte": "largo"}
     # Los códigos válidos salen de GET /api/investor/questions.

@@ -1,10 +1,15 @@
-"""Endpoints del inversionista. Solo I/O HTTP: la lógica vive en el controller."""
+"""Endpoints del inversionista. Solo I/O HTTP: la lógica vive en el controller.
+
+Salvo `/questions` (el cuestionario es catálogo público, no dato de nadie), todo exige
+token. Los datos de un cliente —su perfilamiento y su propuesta— solo los lee él mismo o
+un asesor: `exige_dueno_o_asesor`.
+"""
 
 # pyrefly: ignore [missing-import]
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Query, status
 
 from src.controllers import investor_controller
-from src.dependencies.auth import get_current_user
+from src.dependencies.auth import exige_dueno_o_asesor, get_current_user, require_role
 from src.models.auth import CurrentUser, Rol
 from src.models.investor import (
     Investor,
@@ -30,10 +35,14 @@ async def get_questions() -> list[Pregunta]:
     "/profile",
     response_model=Investor,
     status_code=status.HTTP_201_CREATED,
-    summary="Guarda el perfil del inversionista y calcula su puntaje de riesgo",
+    summary="Perfila al usuario del token: calcula su puntaje y su perfil de riesgo",
 )
-async def create_profile(payload: InvestorProfileCreate) -> Investor:
-    return await investor_controller.create_investor_profile(payload)
+async def create_profile(
+    payload: InvestorProfileCreate,
+    usuario: CurrentUser = Depends(require_role(Rol.INVESTOR)),
+) -> Investor:
+    # El perfilamiento se le adjunta al usuario autenticado. Nadie perfila a nombre de otro.
+    return await investor_controller.create_investor_profile(payload, usuario)
 
 
 @router.get(
@@ -41,7 +50,11 @@ async def create_profile(payload: InvestorProfileCreate) -> Investor:
     response_model=PortfolioProposal,
     summary="Devuelve la propuesta de portafolio (la genera la primera vez)",
 )
-async def get_portfolio(investor_id: str) -> PortfolioProposal:
+async def get_portfolio(
+    investor_id: str,
+    usuario: CurrentUser = Depends(get_current_user),
+) -> PortfolioProposal:
+    exige_dueno_o_asesor(investor_id, usuario)
     return await investor_controller.get_portfolio_proposal(investor_id)
 
 
@@ -61,13 +74,7 @@ async def get_breakdown(
     ),
     usuario: CurrentUser = Depends(get_current_user),
 ) -> ProfilingBreakdown:
-    # Un inversionista solo lee su propio desglose; el asesor lee el de cualquiera
-    # (revisar propuestas ajenas es literalmente su trabajo).
-    if usuario.role is Rol.INVESTOR and usuario.id != investor_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Solo puedes consultar tu propio perfilamiento.",
-        )
+    exige_dueno_o_asesor(investor_id, usuario)
     return await investor_controller.obtener_breakdown(investor_id, session_id)
 
 
@@ -76,5 +83,9 @@ async def get_breakdown(
     response_model=Investor,
     summary="Devuelve el perfil del inversionista",
 )
-async def get_profile(investor_id: str) -> Investor:
+async def get_profile(
+    investor_id: str,
+    usuario: CurrentUser = Depends(get_current_user),
+) -> Investor:
+    exige_dueno_o_asesor(investor_id, usuario)
     return await investor_controller.get_investor(investor_id)
