@@ -10,6 +10,7 @@ from typing import Any
 
 from fastapi import HTTPException, status
 from psycopg import Connection
+from psycopg.errors import RaiseException
 from psycopg.types.json import Jsonb
 
 from src.config.database import fetch_all, fetch_one, get_connection
@@ -86,7 +87,26 @@ async def listar_preguntas() -> list[Pregunta]:
 async def create_investor_profile(
     payload: InvestorProfileCreate, usuario: CurrentUser
 ) -> Investor:
-    """Perfila al usuario del token: puntúa sus respuestas contra la BD y le asigna perfil.
+    """Perfila al usuario del token, traduciendo el guardarraíl de la base a un 422.
+
+    El techo de capital se valida dos veces y a propósito: `_exige_capital_disponible`
+    lo comprueba en la transacción para poder darle al cliente un mensaje con cifras, y
+    el trigger `fn_valida_capital_subcuenta` (migración 002) lo vuelve a comprobar dentro
+    de Postgres. El trigger es el que manda: si alguna vez insertamos una sesión por otro
+    camino, o si la comprobación de arriba se queda corta, la base rechaza la fila igual.
+    Que su `raise` llegue como 500 sería mentir: el cliente pidió más de lo que tiene.
+    """
+    try:
+        return await _perfilar(payload, usuario)
+    except RaiseException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=exc.diag.message_primary or str(exc).strip(),
+        ) from exc
+
+
+async def _perfilar(payload: InvestorProfileCreate, usuario: CurrentUser) -> Investor:
+    """Puntúa sus respuestas contra la BD y le asigna perfil.
 
     El perfilamiento se adjunta a un `profiles` que YA existe (el que creó el registro).
     Crear acá una segunda fila —como se hacía antes— dejaba al cliente con dos identidades:

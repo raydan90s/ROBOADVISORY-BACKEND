@@ -42,6 +42,8 @@ class ColaItem(BaseModel):
 
     investor_nombre: str
     cedula_ruc: str | None = None
+    # De qué subcuenta salió esta solicitud. None si la sesión no es una subcuenta.
+    subaccount_name: str | None = None
 
     puntaje: int | None = None
     perfil_riesgo: str | None = None
@@ -104,6 +106,8 @@ class PropuestaDetalle(BaseModel):
     investor_nombre: str
     investor_email: str | None = None
     cedula_ruc: str | None = None
+    # De qué subcuenta salió esta solicitud. None si la sesión no es una subcuenta.
+    subaccount_name: str | None = None
 
     puntaje: int | None = None
     perfil_riesgo: str | None = None

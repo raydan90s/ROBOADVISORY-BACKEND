@@ -1,0 +1,8 @@
+{
+  // Sin esto el editor resuelve los imports contra el Python global (C:\Python313), donde
+  // no están fastapi, psycopg ni pydantic: el archivo se llena de "Cannot find module"
+  // aunque la app corra perfecto. Las dependencias viven en el .venv del proyecto.
+  "python.defaultInterpreterPath": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+  "python.testing.pytestEnabled": true,
+  "python.testing.pytestArgs": ["tests"]
+}
