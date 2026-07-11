@@ -33,6 +33,16 @@ DISCLAIMER = (
 )
 
 
+def _usd(monto: Decimal | float) -> str:
+    """Formato ecuatoriano: USD 12.000 (el punto separa miles).
+
+    Importa más de lo que parece: `validar_numeros` lee '12,000' como doce mil solo por
+    convención, y mezclar los dos formatos en un mismo texto es pedirle al guardarraíl que
+    adivine. La app escribe un solo formato, siempre.
+    """
+    return f"USD {monto:,.0f}".replace(",", ".")
+
+
 @dataclass(frozen=True)
 class DatosExplicacion:
     """Todo lo que la base sabe de la propuesta. El LLM no ve nada más que esto."""
@@ -114,7 +124,7 @@ def fuentes(d: DatosExplicacion) -> list[dict]:
             "table": "proposal_items",
             "record_id": a.instrumento_code,
             "label": f"{a.nombre} · {a.porcentaje:g}%"
-            + (f" · USD {a.monto_asignado:,.0f}" if a.monto_asignado is not None else ""),
+            + (f" · {_usd(a.monto_asignado)}" if a.monto_asignado is not None else ""),
         }
         for a in d.allocations
     ]
@@ -134,7 +144,7 @@ def fuentes(d: DatosExplicacion) -> list[dict]:
 
 
 def _linea(a: AssetAllocation) -> str:
-    monto = f" (USD {a.monto_asignado:,.0f})".replace(",", ".") if a.monto_asignado else ""
+    monto = f" ({_usd(a.monto_asignado)})" if a.monto_asignado else ""
     emisor = f" de {a.institucion}" if a.institucion else ""
     rating = f" ({a.calificacion})" if a.calificacion else ""
     return f"{a.porcentaje:g}%{monto} en {a.nombre}{emisor}{rating}"
@@ -146,11 +156,7 @@ def explicacion_determinista(d: DatosExplicacion) -> str:
     Pasa el guardarraíl por construcción: cada número que escribe sale de `d`.
     """
     inv = d.investor
-    monto = (
-        f"Sobre un monto de USD {d.monto_total:,.0f}".replace(",", ".") + ", "
-        if d.monto_total is not None
-        else ""
-    )
+    monto = f"Sobre un monto de {_usd(d.monto_total)}, " if d.monto_total is not None else ""
     cartera = "; ".join(_linea(a) for a in d.allocations)
 
     return (
@@ -189,14 +195,12 @@ def _prompt(d: DatosExplicacion) -> str:
     productos = "\n".join(
         f"- {a.nombre} ({a.institucion}, calificación {a.calificacion}): "
         f"{a.porcentaje:g}%"
-        + (f", USD {a.monto_asignado:,.0f}".replace(",", ".") if a.monto_asignado is not None else "")
+        + (f", {_usd(a.monto_asignado)}" if a.monto_asignado is not None else "")
         + (f", plazo {a.plazo_dias} días" if a.plazo_dias is not None else ", sin plazo fijo")
         + (f", retorno referencial {a.retorno_esperado:g}%" if a.retorno_esperado is not None else "")
         for a in d.allocations
     )
-    monto = (
-        f"USD {d.monto_total:,.0f}".replace(",", ".") if d.monto_total is not None else "no declarado"
-    )
+    monto = _usd(d.monto_total) if d.monto_total is not None else "no declarado"
 
     return f"""DATOS (son los ÚNICOS números que puedes usar):
 Cliente: {d.investor.nombre}

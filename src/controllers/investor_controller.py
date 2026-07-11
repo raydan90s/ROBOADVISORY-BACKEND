@@ -13,6 +13,7 @@ from psycopg import Connection
 from psycopg.types.json import Jsonb
 
 from src.config.database import fetch_all, fetch_one, get_connection
+from src.models.auth import CurrentUser
 from src.models.investor import (
     AssetAllocation,
     BreakdownRespuesta,
@@ -80,23 +81,37 @@ async def listar_preguntas() -> list[Pregunta]:
 # ===========================================================================
 
 
-async def create_investor_profile(payload: InvestorProfileCreate) -> Investor:
-    """Crea el inversionista, puntúa sus respuestas contra la BD y le asigna perfil.
+async def create_investor_profile(
+    payload: InvestorProfileCreate, usuario: CurrentUser
+) -> Investor:
+    """Perfila al usuario del token: puntúa sus respuestas contra la BD y le asigna perfil.
 
-    Todo ocurre en una transacción: si una respuesta es inválida, no queda ni el
-    profile ni la sesión a medias.
+    El perfilamiento se adjunta a un `profiles` que YA existe (el que creó el registro).
+    Crear acá una segunda fila —como se hacía antes— dejaba al cliente con dos identidades:
+    la del login y la del cuestionario, que nunca coincidían.
+
+    Todo ocurre en una transacción: si una respuesta es inválida, no queda la sesión a medias.
     """
     with get_connection() as conn:
         rv = _rules_version_activa(conn)
 
+        # coalesce: la cédula que ya tenga el perfil manda. El cuestionario puede
+        # completarla si falta, pero no reescribir un dato de identidad existente.
         investor = conn.execute(
             """
-            insert into public.profiles (role, full_name, email, cedula_ruc)
-            values ('investor', %s, %s, %s)
+            update public.profiles
+            set cedula_ruc = coalesce(cedula_ruc, %s)
+            where id = %s and role = 'investor'
             returning id, full_name, email, cedula_ruc, created_at
             """,
-            (payload.nombre, payload.email, payload.cedula_ruc),
+            (payload.cedula_ruc, usuario.id),
         ).fetchone()
+
+        if not investor:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="El usuario del token no existe como inversionista.",
+            )
 
         session = conn.execute(
             """
@@ -583,5 +598,5 @@ async def get_portfolio_proposal(investor_id: str) -> PortfolioProposal:
             monto_total=proposal["total_amount"],
             allocations=allocations,
             retorno_esperado_anual=retorno,
-            explicacion=explicacion,
+            explicacion=explicacion.texto,
         )

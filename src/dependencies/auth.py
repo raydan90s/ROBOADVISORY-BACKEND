@@ -57,6 +57,20 @@ async def get_current_user(
         raise _no_autenticado("Token con contenido inválido.") from exc
 
 
+def exige_dueno_o_asesor(investor_id: str, usuario: CurrentUser) -> None:
+    """Un inversionista solo accede a SUS datos; el asesor accede a los de cualquiera.
+
+    Revisar carteras ajenas es literalmente el trabajo del asesor (HU3), así que el rol
+    lo habilita. Para el inversionista, el `id` del token es la única autoridad: el
+    `investor_id` de la URL es un dato que el cliente escribe, y no se le cree.
+    """
+    if usuario.role is Rol.INVESTOR and usuario.id != investor_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Solo puedes consultar tu propia información.",
+        )
+
+
 def require_role(*roles: Rol) -> Callable[[CurrentUser], CurrentUser]:
     """Dependencia que exige uno de los roles dados. 401 si no hay token, 403 si el rol no basta."""
     permitidos = set(roles)

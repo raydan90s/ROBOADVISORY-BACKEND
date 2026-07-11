@@ -15,9 +15,12 @@ class Settings(BaseSettings):
     # Base de datos: connection string de Postgres (Session pooler de Supabase).
     DATABASE_URL: str
 
-    # IA
+    # IA. Ojo con el modelo: la clave del proyecto tiene cuota 0 en `gemini-2.0-flash`
+    # (429 "limit: 0", que no es "te pasaste" sino "este modelo no está habilitado").
+    # `gemini-flash-latest` sí responde. Si cambias de clave, verifica el modelo con:
+    #   curl ".../v1beta/models/<modelo>:generateContent?key=$GEMINI_API_KEY" -d '{...}'
     GEMINI_API_KEY: str = ""
-    GEMINI_MODEL: str = "gemini-2.0-flash"
+    GEMINI_MODEL: str = "gemini-flash-latest"
 
     # Auth: firma de los JWT. En producción es obligatorio ponerlo en el entorno
     # (Render); si se queda el default, los tokens de todos los despliegues serían
