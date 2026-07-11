@@ -17,6 +17,8 @@ from src.models.auth import CurrentUser
 from src.models.investor import (
     AssetAllocation,
     BreakdownRespuesta,
+    CapitalAsignar,
+    CapitalResponse,
     EstadoPropuesta,
     Investor,
     InvestorProfileCreate,
@@ -27,6 +29,7 @@ from src.models.investor import (
     PortfolioProposal,
     ProfilingBreakdown,
     RespuestaDetalle,
+    Subcuenta,
 )
 from src.services.ai_agent import DatosExplicacion, Explicacion, redactar_explicacion
 
@@ -600,3 +603,48 @@ async def get_portfolio_proposal(investor_id: str) -> PortfolioProposal:
             retorno_esperado_anual=retorno,
             explicacion=explicacion.texto,
         )
+
+
+# ===========================================================================
+# Subcuentas — MOCKS de Fase 1 (fijan el contrato para el equipo)
+#
+# `total_capital` (en profiles) y `subaccount_name` (en profiling_sessions) todavía
+# no existen en la base: los trae la migración 002_subcuentas.sql (Fase 3). Hasta
+# entonces estas dos funciones devuelven datos fijos con la MISMA forma que tendrá
+# la respuesta real, para que el resto del equipo pueda construir contra el contrato
+# ya. No hay lógica que "romper" acá todavía.
+# ===========================================================================
+
+
+async def declarar_capital_mock(payload: CapitalAsignar, usuario: CurrentUser) -> CapitalResponse:
+    """Mock de POST /api/investor/capital. Fase 3 la reemplaza por un UPDATE real."""
+    return CapitalResponse(
+        investor_id=usuario.id,
+        capital_total=float(payload.monto),
+        capital_asignado=0.0,
+        capital_disponible=float(payload.monto),
+    )
+
+
+async def listar_subcuentas_mock(investor_id: str) -> list[Subcuenta]:
+    """Mock de GET /api/investor/{id}/subaccounts. Fase 3 la reemplaza por un SELECT real."""
+    return [
+        Subcuenta(
+            session_id="00000000-0000-0000-0000-000000000001",
+            investor_id=investor_id,
+            subaccount_name="Jubilación",
+            monto=20000.0,
+            perfil_riesgo=PerfilRiesgo.MODERADO,
+            puntaje=12,
+            estado_propuesta=EstadoPropuesta.PENDIENTE_REVISION,
+        ),
+        Subcuenta(
+            session_id="00000000-0000-0000-0000-000000000002",
+            investor_id=investor_id,
+            subaccount_name="Viaje 2027",
+            monto=10000.0,
+            perfil_riesgo=PerfilRiesgo.AGRESIVO,
+            puntaje=14,
+            estado_propuesta=EstadoPropuesta.APROBADA,
+        ),
+    ]

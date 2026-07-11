@@ -12,11 +12,14 @@ from src.controllers import investor_controller
 from src.dependencies.auth import exige_dueno_o_asesor, get_current_user, require_role
 from src.models.auth import CurrentUser, Rol
 from src.models.investor import (
+    CapitalAsignar,
+    CapitalResponse,
     Investor,
     InvestorProfileCreate,
     PortfolioProposal,
     Pregunta,
     ProfilingBreakdown,
+    Subcuenta,
 )
 
 router = APIRouter(prefix="/api/investor", tags=["investor"])
@@ -45,6 +48,19 @@ async def create_profile(
     return await investor_controller.create_investor_profile(payload, usuario)
 
 
+@router.post(
+    "/capital",
+    response_model=CapitalResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Declara el capital total del usuario del token (MOCK — Fase 3 lo vuelve real)",
+)
+async def set_capital(
+    payload: CapitalAsignar,
+    usuario: CurrentUser = Depends(require_role(Rol.INVESTOR)),
+) -> CapitalResponse:
+    return await investor_controller.declarar_capital_mock(payload, usuario)
+
+
 @router.get(
     "/{investor_id}/portfolio",
     response_model=PortfolioProposal,
@@ -52,10 +68,32 @@ async def create_profile(
 )
 async def get_portfolio(
     investor_id: str,
+    session_id: str | None = Query(
+        None,
+        description=(
+            "Subcuenta concreta (Fase 3). Sin este parámetro se devuelve la propuesta "
+            "de la última sesión del inversionista — hoy el único caso soportado."
+        ),
+    ),
     usuario: CurrentUser = Depends(get_current_user),
 ) -> PortfolioProposal:
     exige_dueno_o_asesor(investor_id, usuario)
+    # TODO(Fase 3): usar `session_id` para traer la propuesta de esa subcuenta puntual.
+    _ = session_id
     return await investor_controller.get_portfolio_proposal(investor_id)
+
+
+@router.get(
+    "/{investor_id}/subaccounts",
+    response_model=list[Subcuenta],
+    summary="Lista las subcuentas del inversionista (MOCK — Fase 3 lo vuelve real)",
+)
+async def get_subaccounts(
+    investor_id: str,
+    usuario: CurrentUser = Depends(get_current_user),
+) -> list[Subcuenta]:
+    exige_dueno_o_asesor(investor_id, usuario)
+    return await investor_controller.listar_subcuentas_mock(investor_id)
 
 
 @router.get(

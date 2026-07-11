@@ -175,6 +175,44 @@ class BreakdownRespuesta(BaseModel):
     puntos: int
 
 
+# ---------------------------------------------------------------------------
+# Subcuentas (capital total dividido en sub-inversiones con perfil propio)
+# ---------------------------------------------------------------------------
+
+
+class CapitalAsignar(BaseModel):
+    """Body del POST /api/investor/capital: declara el capital total disponible."""
+
+    monto: Decimal = Field(..., gt=0, max_digits=14, decimal_places=2)
+
+
+class CapitalResponse(BaseModel):
+    """Respuesta del POST /api/investor/capital."""
+
+    investor_id: str
+    capital_total: float
+    capital_asignado: float
+    capital_disponible: float
+
+
+class Subcuenta(BaseModel):
+    """Una subcuenta: una sesión de perfilamiento con nombre propio y su propio monto.
+
+    Cada subcuenta puede tener su propio perfil de riesgo (responde su propio
+    cuestionario) y su propia propuesta de portafolio, seleccionable vía
+    `?session_id=` en GET /api/investor/{id}/portfolio.
+    """
+
+    session_id: str
+    investor_id: str
+    subaccount_name: str
+    monto: float | None = None
+    perfil_riesgo: PerfilRiesgo | None = None
+    puntaje: int | None = None
+    estado_propuesta: EstadoPropuesta | None = None
+    created_at: datetime | None = None
+
+
 class ProfilingBreakdown(BaseModel):
     """El desglose completo del puntaje: es la ComoSeCalculoPage, servida por la BD.
 
