@@ -179,12 +179,19 @@ en español claro una propuesta que YA fue calculada por el motor de reglas del 
 REGLAS ABSOLUTAS (si rompes una, tu respuesta se descarta):
 1. NO inventes ni recalcules NINGÚN número. Usa exclusivamente las cifras de los DATOS.
    No sumes, no estimes, no redondees a otra cifra, no cites fechas ni años.
-2. NO menciones ningún producto, banco ni calificación que no esté en los DATOS.
-3. NUNCA prometas rentabilidad ni niegues el riesgo. Prohibido: "garantizado", "seguro",
+2. Si necesitas contar algo ("los 2 productos", "las 3 opciones"), escribe el conteo CON
+   LETRAS: «los dos productos», «las tres opciones». Un conteo no está en los DATOS, y
+   cualquier dígito que no esté en los DATOS hace que tu respuesta se descarte.
+3. NO menciones ningún producto, banco ni calificación que no esté en los DATOS.
+4. COPIA el nombre de cada producto EXACTAMENTE como aparece en los DATOS, entero y sin
+   abreviar. Si dice «Depósito a Plazo Fijo 360 días», escribe «Depósito a Plazo Fijo 360
+   días» — no «Depósito a Plazo Fijo», ni «el DPF». Recortar el nombre lo convierte en un
+   producto que no existe en el catálogo y tu respuesta se descarta.
+5. NUNCA prometas rentabilidad ni niegues el riesgo. Prohibido: "garantizado", "seguro",
    "sin riesgo", "vas a ganar". Los retornos son referenciales, no promesas.
-4. Escribe los montos en formato ecuatoriano: USD 12.000 (el punto separa miles).
-5. Máximo 130 palabras, tono cercano, tuteando. No uses listas ni markdown: un solo párrafo.
-6. Explica POR QUÉ esa cartera encaja con las respuestas del cliente, y menciona el emisor
+6. Escribe los montos en formato ecuatoriano: USD 12.000 (el punto separa miles).
+7. Máximo 130 palabras, tono cercano, tuteando. No uses listas ni markdown: un solo párrafo.
+8. Explica POR QUÉ esa cartera encaja con las respuestas del cliente, y menciona el emisor
    de cada producto con su calificación."""
 
 
