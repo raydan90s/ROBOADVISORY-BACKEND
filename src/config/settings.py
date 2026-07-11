@@ -12,13 +12,19 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # Supabase
-    SUPABASE_URL: str
-    SUPABASE_KEY: str
+    # Base de datos: connection string de Postgres (Session pooler de Supabase).
+    DATABASE_URL: str
 
     # IA
     GEMINI_API_KEY: str = ""
     GEMINI_MODEL: str = "gemini-2.0-flash"
+
+    # Auth: firma de los JWT. En producción es obligatorio ponerlo en el entorno
+    # (Render); si se queda el default, los tokens de todos los despliegues serían
+    # falsificables con una llave pública.
+    JWT_SECRET: str = "dev-insecure-secret-change-me"
+    JWT_ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 720  # 12 h: cubre la demo sin refresh tokens
 
     # App
     APP_ENV: str = "development"

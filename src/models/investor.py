@@ -1,83 +1,132 @@
-"""Esquemas Pydantic del inversionista y de la propuesta de portafolio."""
+"""Esquemas Pydantic del inversionista y de la propuesta de portafolio.
+
+Los enums espejan los tipos ENUM de Postgres definidos en schema.sql: si cambias
+uno allá, cámbialo aquí. Los porcentajes y puntajes NUNCA los inventa el LLM;
+salen de scoring_rules / profile_thresholds / allocation_template_items.
+"""
 
 from datetime import datetime
 from enum import Enum
-from typing import Any
 
 from pydantic import BaseModel, Field
 
 
 class PerfilRiesgo(str, Enum):
+    """risk_profiles.code"""
+
     CONSERVADOR = "conservador"
     MODERADO = "moderado"
     AGRESIVO = "agresivo"
 
 
+class NivelRiesgo(str, Enum):
+    """enum risk_level"""
+
+    BAJO = "bajo"
+    MEDIO = "medio"
+    ALTO = "alto"
+
+
 class EstadoPropuesta(str, Enum):
-    PENDIENTE = "pendiente"      # perfil guardado, IA aún no corre
-    GENERANDO = "generando"      # el agente está trabajando
-    LISTA = "lista"              # propuesta disponible
-    ACEPTADA = "aceptada"        # el usuario la aprobó
-    RECHAZADA = "rechazada"
+    """enum proposal_status"""
+
+    PENDIENTE_REVISION = "pending_review"
+    APROBADA = "approved"
+    EDITADA = "edited"
+    RECHAZADA = "rejected"
+
+
+# ---------------------------------------------------------------------------
+# Cuestionario (se sirve desde la BD, no está hardcodeado en el front)
+# ---------------------------------------------------------------------------
+
+
+class OpcionPregunta(BaseModel):
+    code: str
+    label: str
+
+
+class Pregunta(BaseModel):
+    code: str
+    text: str
+    opciones: list[OpcionPregunta]
+
+
+# ---------------------------------------------------------------------------
+# Perfilamiento
+# ---------------------------------------------------------------------------
 
 
 class InvestorProfileCreate(BaseModel):
-    """Body del POST /api/investor/profile — lo que manda el frontend (Expo)."""
+    """Body del POST /api/investor/profile."""
 
     nombre: str = Field(..., min_length=2, max_length=120)
     email: str | None = None
-    edad: int | None = Field(default=None, ge=18, le=100)
-    horizonte_anios: int | None = Field(default=None, ge=1, le=40)
-    monto_inicial: float | None = Field(default=None, ge=0)
+    cedula_ruc: str | None = None
 
-    # Respuestas crudas del test de riesgo: {"pregunta_1": 3, "pregunta_2": 1, ...}
-    # El puntaje NO viene del cliente: se calcula en el backend (ver
-    # calcular_puntaje_riesgo en investor_controller.py) para que nadie lo falsee.
-    respuestas_riesgo: dict[str, int] = Field(default_factory=dict)
+    # {question_code: option_code}, ej. {"objetivo": "crecer", "horizonte": "largo"}
+    # Los códigos válidos salen de GET /api/investor/questions.
+    # El puntaje no viaja desde el cliente: lo calcula la BD vía scoring_rules.
+    respuestas: dict[str, str] = Field(..., min_length=1)
+
+
+class RespuestaDetalle(BaseModel):
+    """Una respuesta con los puntos que aportó — permite explicarle al usuario el porqué."""
+
+    pregunta_code: str
+    pregunta_text: str
+    opcion_code: str
+    opcion_label: str
+    puntos: int
 
 
 class Investor(BaseModel):
-    """Representación completa de la fila en la tabla `investors`."""
+    """Resultado del perfilamiento: el profile + su última sesión."""
 
-    id: str
+    investor_id: str
+    session_id: str
     nombre: str
     email: str | None = None
-    edad: int | None = None
-    horizonte_anios: int | None = None
-    monto_inicial: float | None = None
+    cedula_ruc: str | None = None
 
-    respuestas_riesgo: dict[str, int] = Field(default_factory=dict)
-    puntaje_riesgo: int = Field(default=0, ge=0, le=100)
-    perfil_riesgo: PerfilRiesgo = PerfilRiesgo.MODERADO
-    estado_propuesta: EstadoPropuesta = EstadoPropuesta.PENDIENTE
+    puntaje: int
+    perfil_riesgo: PerfilRiesgo
+    respuestas: list[RespuestaDetalle] = Field(default_factory=list)
 
     created_at: datetime | None = None
 
 
-class AssetAllocation(BaseModel):
-    """Una línea del portafolio propuesto."""
+# ---------------------------------------------------------------------------
+# Propuesta de portafolio
+# ---------------------------------------------------------------------------
 
-    ticker: str                      # "SPY", "BONO-SOBERANO-2030", "BTC"...
+
+class AssetAllocation(BaseModel):
+    """Una línea del portafolio, tomada de allocation_template_items + instruments."""
+
+    instrumento_code: str
     nombre: str
-    clase_activo: str                # "renta_variable" | "renta_fija" | "cripto" | "cash"
-    porcentaje: float = Field(..., ge=0, le=100)
-    justificacion: str | None = None
+    clase_activo: str
+    riesgo: NivelRiesgo
+    porcentaje: float = Field(..., gt=0, le=100)
+    retorno_esperado: float | None = None
 
 
 class PortfolioProposal(BaseModel):
     """Respuesta del GET /api/investor/{id}/portfolio."""
 
+    proposal_id: str
     investor_id: str
+    session_id: str
+
     perfil_riesgo: PerfilRiesgo
-    puntaje_riesgo: int
-    estado_propuesta: EstadoPropuesta
+    puntaje: int
+    riesgo_esperado: NivelRiesgo
+    estado: EstadoPropuesta
 
     allocations: list[AssetAllocation] = Field(default_factory=list)
+    # Promedio ponderado de instruments.expected_return. Ficticio, solo demo.
     retorno_esperado_anual: float | None = None
-    volatilidad_esperada: float | None = None
 
-    # Texto en lenguaje natural que genera el agente para mostrar en la app.
-    resumen_ia: str | None = None
-
-    # Espacio libre para lo que el agente quiera devolver (trazas, fuentes, etc.)
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    # Único campo que redacta el LLM.
+    explicacion: str | None = None

@@ -4,8 +4,14 @@ uvicorn[standard]==0.34.0
 pydantic==2.10.4
 pydantic-settings==2.7.0
 
-# --- Base de datos ---
-supabase==2.11.0
+# --- Base de datos: Postgres directo (Session pooler de Supabase) ---
+psycopg[binary]==3.2.3
+psycopg_pool==3.2.4
+
+# --- Auth: hashing de contraseñas y JWT ---
+bcrypt==4.2.1
+pyjwt==2.10.1
+python-multipart==0.0.20
 
 # --- Entorno ---
 python-dotenv==1.0.1

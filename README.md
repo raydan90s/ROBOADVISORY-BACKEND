@@ -42,7 +42,7 @@ tabla `investors`.
 ### 4. Correr
 
 ```powershell
-.venv\Scripts\python.exe -m uvicorn src.main:app --reload --port 8000
+uvicorn src.main:app --reload
 ```
 
 - Docs interactivas: <http://127.0.0.1:8000/docs> — desde ahí puedes probar los

@@ -3,9 +3,23 @@
 from fastapi import APIRouter, status
 
 from src.controllers import investor_controller
-from src.models.investor import Investor, InvestorProfileCreate, PortfolioProposal
+from src.models.investor import (
+    Investor,
+    InvestorProfileCreate,
+    PortfolioProposal,
+    Pregunta,
+)
 
 router = APIRouter(prefix="/api/investor", tags=["investor"])
+
+
+@router.get(
+    "/questions",
+    response_model=list[Pregunta],
+    summary="Cuestionario de perfilamiento (preguntas y opciones válidas)",
+)
+async def get_questions() -> list[Pregunta]:
+    return await investor_controller.listar_preguntas()
 
 
 @router.post(
@@ -21,7 +35,7 @@ async def create_profile(payload: InvestorProfileCreate) -> Investor:
 @router.get(
     "/{investor_id}/portfolio",
     response_model=PortfolioProposal,
-    summary="Devuelve la propuesta de portafolio generada por el agente de IA",
+    summary="Devuelve la propuesta de portafolio (la genera la primera vez)",
 )
 async def get_portfolio(investor_id: str) -> PortfolioProposal:
     return await investor_controller.get_portfolio_proposal(investor_id)
