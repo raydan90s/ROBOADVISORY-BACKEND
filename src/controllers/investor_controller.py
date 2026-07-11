@@ -10,6 +10,7 @@ from typing import Any
 
 from fastapi import HTTPException, status
 from psycopg import Connection
+from psycopg.errors import RaiseException
 from psycopg.types.json import Jsonb
 
 from src.config.database import fetch_all, fetch_one, get_connection
@@ -94,142 +95,167 @@ async def create_investor_profile(
     la del login y la del cuestionario, que nunca coincidían.
 
     Todo ocurre en una transacción: si una respuesta es inválida, no queda la sesión a medias.
+
+    Si `payload.subaccount_name` viene, esta sesión ES una subcuenta: el INSERT dispara
+    `fn_valida_capital_subcuenta` (migración 002), que compara este monto contra el
+    capital sin asignar **dentro de la base**, bloqueando la fila de `profiles` para
+    que dos subcuentas creadas a la vez no se cuelen las dos. Si no hay espacio, la
+    excepción de Postgres se traduce acá a un 422.
     """
-    with get_connection() as conn:
-        rv = _rules_version_activa(conn)
+    try:
+        with get_connection() as conn:
+            rv = _rules_version_activa(conn)
 
-        # coalesce: la cédula que ya tenga el perfil manda. El cuestionario puede
-        # completarla si falta, pero no reescribir un dato de identidad existente.
-        investor = conn.execute(
-            """
-            update public.profiles
-            set cedula_ruc = coalesce(cedula_ruc, %s)
-            where id = %s and role = 'investor'
-            returning id, full_name, email, cedula_ruc, created_at
-            """,
-            (payload.cedula_ruc, usuario.id),
-        ).fetchone()
-
-        if not investor:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="El usuario del token no existe como inversionista.",
-            )
-
-        session = conn.execute(
-            """
-            insert into public.profiling_sessions (investor_id, rules_version_id, amount)
-            values (%s, %s, %s)
-            returning id
-            """,
-            (investor["id"], rv["id"], payload.monto),
-        ).fetchone()
-
-        detalles: list[RespuestaDetalle] = []
-        total = 0
-
-        for q_code, o_code in payload.respuestas.items():
-            regla = conn.execute(
+            # coalesce: la cédula que ya tenga el perfil manda. El cuestionario puede
+            # completarla si falta, pero no reescribir un dato de identidad existente.
+            investor = conn.execute(
                 """
-                select q.id   as question_id, q.text  as pregunta_text,
-                       o.id   as option_id,   o.label as opcion_label,
-                       sr.points
-                from public.questions q
-                join public.question_options o on o.question_id = q.id
-                join public.scoring_rules sr   on sr.question_option_id = o.id
-                where q.code = %s and o.code = %s and sr.rules_version_id = %s
+                update public.profiles
+                set cedula_ruc = coalesce(cedula_ruc, %s)
+                where id = %s and role = 'investor'
+                returning id, full_name, email, cedula_ruc, created_at
                 """,
-                (q_code, o_code, rv["id"]),
+                (payload.cedula_ruc, usuario.id),
             ).fetchone()
 
-            if not regla:
+            if not investor:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="El usuario del token no existe como inversionista.",
+                )
+
+            session = conn.execute(
+                """
+                insert into public.profiling_sessions
+                    (investor_id, rules_version_id, amount, subaccount_name)
+                values (%s, %s, %s, %s)
+                returning id
+                """,
+                (investor["id"], rv["id"], payload.monto, payload.subaccount_name),
+            ).fetchone()
+
+            detalles: list[RespuestaDetalle] = []
+            total = 0
+
+            for q_code, o_code in payload.respuestas.items():
+                regla = conn.execute(
+                    """
+                    select q.id   as question_id, q.text  as pregunta_text,
+                           o.id   as option_id,   o.label as opcion_label,
+                           sr.points
+                    from public.questions q
+                    join public.question_options o on o.question_id = q.id
+                    join public.scoring_rules sr   on sr.question_option_id = o.id
+                    where q.code = %s and o.code = %s and sr.rules_version_id = %s
+                    """,
+                    (q_code, o_code, rv["id"]),
+                ).fetchone()
+
+                if not regla:
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail=(
+                            f"Respuesta inválida: '{o_code}' no es una opción de '{q_code}' "
+                            f"en las reglas {rv['version_label']}."
+                        ),
+                    )
+
+                conn.execute(
+                    """
+                    insert into public.profiling_answers
+                        (session_id, question_id, option_id, points_awarded)
+                    values (%s, %s, %s, %s)
+                    """,
+                    (session["id"], regla["question_id"], regla["option_id"], regla["points"]),
+                )
+
+                total += regla["points"]
+                detalles.append(
+                    RespuestaDetalle(
+                        pregunta_code=q_code,
+                        pregunta_text=regla["pregunta_text"],
+                        opcion_code=o_code,
+                        opcion_label=regla["opcion_label"],
+                        puntos=regla["points"],
+                    )
+                )
+
+            perfil = conn.execute(
+                """
+                select rp.id, rp.code
+                from public.profile_thresholds pt
+                join public.risk_profiles rp on rp.id = pt.risk_profile_id
+                where pt.rules_version_id = %s
+                  and %s between pt.min_score and pt.max_score
+                """,
+                (rv["id"], total),
+            ).fetchone()
+
+            if not perfil:
+                # Pasa si el usuario contestó solo parte del cuestionario: el puntaje
+                # cae fuera de todos los rangos de profile_thresholds.
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                     detail=(
-                        f"Respuesta inválida: '{o_code}' no es una opción de '{q_code}' "
-                        f"en las reglas {rv['version_label']}."
+                        f"El puntaje {total} no cae en ningún rango de perfil. "
+                        "¿Respondiste todas las preguntas?"
                     ),
                 )
 
             conn.execute(
                 """
-                insert into public.profiling_answers
-                    (session_id, question_id, option_id, points_awarded)
-                values (%s, %s, %s, %s)
+                update public.profiling_sessions
+                set total_score = %s, risk_profile_id = %s, completed_at = now()
+                where id = %s
                 """,
-                (session["id"], regla["question_id"], regla["option_id"], regla["points"]),
+                (total, perfil["id"], session["id"]),
             )
 
-            total += regla["points"]
-            detalles.append(
-                RespuestaDetalle(
-                    pregunta_code=q_code,
-                    pregunta_text=regla["pregunta_text"],
-                    opcion_code=o_code,
-                    opcion_label=regla["opcion_label"],
-                    puntos=regla["points"],
-                )
+            return Investor(
+                investor_id=str(investor["id"]),
+                session_id=str(session["id"]),
+                nombre=investor["full_name"],
+                email=investor["email"],
+                cedula_ruc=investor["cedula_ruc"],
+                puntaje=total,
+                perfil_riesgo=PerfilRiesgo(perfil["code"]),
+                respuestas=detalles,
+                monto=float(payload.monto),
+                subaccount_name=payload.subaccount_name,
+                created_at=investor["created_at"],
             )
-
-        perfil = conn.execute(
-            """
-            select rp.id, rp.code
-            from public.profile_thresholds pt
-            join public.risk_profiles rp on rp.id = pt.risk_profile_id
-            where pt.rules_version_id = %s
-              and %s between pt.min_score and pt.max_score
-            """,
-            (rv["id"], total),
-        ).fetchone()
-
-        if not perfil:
-            # Pasa si el usuario contestó solo parte del cuestionario: el puntaje
-            # cae fuera de todos los rangos de profile_thresholds.
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=(
-                    f"El puntaje {total} no cae en ningún rango de perfil. "
-                    "¿Respondiste todas las preguntas?"
-                ),
-            )
-
-        conn.execute(
-            """
-            update public.profiling_sessions
-            set total_score = %s, risk_profile_id = %s, completed_at = now()
-            where id = %s
-            """,
-            (total, perfil["id"], session["id"]),
-        )
-
-        return Investor(
-            investor_id=str(investor["id"]),
-            session_id=str(session["id"]),
-            nombre=investor["full_name"],
-            email=investor["email"],
-            cedula_ruc=investor["cedula_ruc"],
-            puntaje=total,
-            perfil_riesgo=PerfilRiesgo(perfil["code"]),
-            respuestas=detalles,
-            monto=float(payload.monto),
-            created_at=investor["created_at"],
-        )
+    except RaiseException as exc:
+        # El guardarraíl de capital vive en el trigger, no acá: si rechazó la
+        # subcuenta, esto es un error del cliente (pidió más de lo que tiene), no
+        # nuestro. El `with get_connection()` ya hizo rollback antes de propagar.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=exc.diag.message_primary or str(exc).strip(),
+        ) from exc
 
 
-async def get_investor(investor_id: str) -> Investor:
-    """Lee el inversionista con su sesión de perfilamiento más reciente."""
+async def get_investor(investor_id: str, session_id: str | None = None) -> Investor:
+    """Lee el inversionista con una sesión de perfilamiento.
+
+    Sin `session_id` toma la más reciente (comportamiento de siempre). Con
+    `session_id` —una subcuenta puntual— exige además que esa sesión sea de este
+    `investor_id`: si no calzan, no hay fila y el resultado es 404, no el
+    perfilamiento de otra subcuenta.
+    """
     fila = fetch_one(
         """
         select p.id as investor_id, p.full_name, p.email, p.cedula_ruc, p.created_at,
-               s.id as session_id, s.total_score, s.amount, rp.code as perfil_code
+               s.id as session_id, s.total_score, s.amount, s.subaccount_name,
+               rp.code as perfil_code
         from public.profiles p
         join public.profiling_sessions s on s.investor_id = p.id
         left join public.risk_profiles rp on rp.id = s.risk_profile_id
         where p.id = %s and p.role = 'investor'
+          and (%s::uuid is null or s.id = %s::uuid)
         order by s.created_at desc
         limit 1
         """,
-        (investor_id,),
+        (investor_id, session_id, session_id),
     )
 
     if not fila or fila["perfil_code"] is None:
@@ -262,6 +288,7 @@ async def get_investor(investor_id: str) -> Investor:
         perfil_riesgo=PerfilRiesgo(fila["perfil_code"]),
         respuestas=[RespuestaDetalle(**r) for r in respuestas],
         monto=fila["amount"],
+        subaccount_name=fila["subaccount_name"],
         created_at=fila["created_at"],
     )
 
@@ -485,13 +512,19 @@ def _guardar_interaccion(
     )
 
 
-async def get_portfolio_proposal(investor_id: str) -> PortfolioProposal:
+async def get_portfolio_proposal(
+    investor_id: str, session_id: str | None = None
+) -> PortfolioProposal:
     """Devuelve la propuesta del inversionista, generándola la primera vez.
 
     La propuesta se guarda (proposals + proposal_items): es un snapshot inmutable
     que el asesor revisará en la HU3, así que no se regenera en cada GET.
+
+    Sin `session_id` es la última sesión (comportamiento de siempre). Con
+    `session_id` es la propuesta de esa subcuenta puntual — `get_investor` ya
+    garantiza que esa sesión es de este `investor_id`.
     """
-    investor = await get_investor(investor_id)
+    investor = await get_investor(investor_id, session_id)
 
     with get_connection() as conn:
         existente = conn.execute(
@@ -606,45 +639,81 @@ async def get_portfolio_proposal(investor_id: str) -> PortfolioProposal:
 
 
 # ===========================================================================
-# Subcuentas — MOCKS de Fase 1 (fijan el contrato para el equipo)
+# Subcuentas (Fase 3): capital total + subcuentas con nombre propio.
 #
-# `total_capital` (en profiles) y `subaccount_name` (en profiling_sessions) todavía
-# no existen en la base: los trae la migración 002_subcuentas.sql (Fase 3). Hasta
-# entonces estas dos funciones devuelven datos fijos con la MISMA forma que tendrá
-# la respuesta real, para que el resto del equipo pueda construir contra el contrato
-# ya. No hay lógica que "romper" acá todavía.
+# El guardarraíl "una subcuenta no supera el capital sin asignar" NO vive acá: es
+# el trigger `fn_valida_capital_subcuenta` (migración 002) el que lo aplica dentro
+# de la transacción del INSERT en `create_investor_profile`, con el lock de
+# `profiles` que cierra la condición de carrera. Acá solo hay lectura/escritura
+# simple.
 # ===========================================================================
 
 
-async def declarar_capital_mock(payload: CapitalAsignar, usuario: CurrentUser) -> CapitalResponse:
-    """Mock de POST /api/investor/capital. Fase 3 la reemplaza por un UPDATE real."""
+async def declarar_capital(payload: CapitalAsignar, usuario: CurrentUser) -> CapitalResponse:
+    """POST /api/investor/capital: declara (fija) el capital total del usuario del token."""
+    with get_connection() as conn:
+        fila = conn.execute(
+            """
+            update public.profiles
+            set total_capital = %s
+            where id = %s and role = 'investor'
+            returning id
+            """,
+            (payload.monto, usuario.id),
+        ).fetchone()
+
+        if not fila:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="El usuario del token no existe como inversionista.",
+            )
+
+        asignado = conn.execute(
+            """
+            select coalesce(sum(amount), 0) as total
+            from public.profiling_sessions
+            where investor_id = %s
+            """,
+            (usuario.id,),
+        ).fetchone()["total"]
+
+    if payload.monto < asignado:
+        # No tiene sentido declarar menos capital del que ya está repartido en
+        # subcuentas existentes: el disponible quedaría negativo.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"Ya tienes USD {asignado:,.2f} repartidos en subcuentas; "
+                f"no puedes declarar un capital total menor (USD {payload.monto:,.2f})."
+            ),
+        )
+
     return CapitalResponse(
         investor_id=usuario.id,
         capital_total=float(payload.monto),
-        capital_asignado=0.0,
-        capital_disponible=float(payload.monto),
+        capital_asignado=float(asignado),
+        capital_disponible=float(payload.monto) - float(asignado),
     )
 
 
-async def listar_subcuentas_mock(investor_id: str) -> list[Subcuenta]:
-    """Mock de GET /api/investor/{id}/subaccounts. Fase 3 la reemplaza por un SELECT real."""
-    return [
-        Subcuenta(
-            session_id="00000000-0000-0000-0000-000000000001",
-            investor_id=investor_id,
-            subaccount_name="Jubilación",
-            monto=20000.0,
-            perfil_riesgo=PerfilRiesgo.MODERADO,
-            puntaje=12,
-            estado_propuesta=EstadoPropuesta.PENDIENTE_REVISION,
-        ),
-        Subcuenta(
-            session_id="00000000-0000-0000-0000-000000000002",
-            investor_id=investor_id,
-            subaccount_name="Viaje 2027",
-            monto=10000.0,
-            perfil_riesgo=PerfilRiesgo.AGRESIVO,
-            puntaje=14,
-            estado_propuesta=EstadoPropuesta.APROBADA,
-        ),
-    ]
+async def listar_subcuentas(investor_id: str) -> list[Subcuenta]:
+    """GET /api/investor/{id}/subaccounts: las sesiones con nombre propio de este inversionista."""
+    filas = fetch_all(
+        """
+        select s.id::text          as session_id,
+               s.investor_id::text as investor_id,
+               s.subaccount_name,
+               s.amount            as monto,
+               rp.code             as perfil_riesgo,
+               s.total_score       as puntaje,
+               pr.status           as estado_propuesta,
+               s.created_at
+        from public.profiling_sessions s
+        left join public.risk_profiles rp on rp.id = s.risk_profile_id
+        left join public.proposals pr     on pr.session_id = s.id
+        where s.investor_id = %s and s.subaccount_name is not null
+        order by s.created_at
+        """,
+        (investor_id,),
+    )
+    return [Subcuenta(**f) for f in filas]

@@ -74,6 +74,11 @@ class InvestorProfileCreate(BaseModel):
     # completa en su perfil (nunca se sobrescribe una ya existente).
     cedula_ruc: str | None = None
 
+    # Si viene, esta sesión ES una subcuenta: se valida contra el capital sin asignar
+    # (trigger `fn_valida_capital_subcuenta`, migración 002). Sin nombre es un
+    # perfilamiento normal, como antes de las subcuentas.
+    subaccount_name: str | None = Field(None, min_length=1, max_length=120)
+
     # {question_code: option_code}, ej. {"objetivo": "crecer", "horizonte": "largo"}
     # Los códigos válidos salen de GET /api/investor/questions.
     # El puntaje no viaja desde el cliente: lo calcula la BD vía scoring_rules.
@@ -105,6 +110,8 @@ class Investor(BaseModel):
 
     # El monto que declaró en el cuestionario. None solo en sesiones viejas.
     monto: float | None = None
+    # Nombre de la subcuenta. None si esta sesión no es una subcuenta.
+    subaccount_name: str | None = None
 
     created_at: datetime | None = None
 
