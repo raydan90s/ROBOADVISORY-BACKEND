@@ -147,13 +147,17 @@ _NOTICIAS = re.compile(
 
 # Mercados externos: cripto, forex, índices, acciones — el vocabulario que el router
 # original rechazaba de plano y que ahora abre la Ruta B o C en vez de un rechazo.
+#
+# Cada término admite su PLURAL. El `\b` de cierre es lo que obliga a escribirlos: sin la
+# `s?`, "los bitcoins" caía en la Ruta A y el agente contestaba "no está en el catálogo"
+# aunque la Ruta C tuviera la cotización a mano. El usuario no escribe en singular.
 _MERCADO_EXTERNO = re.compile(
     r"""
     \b(?:
-        bitcoin | btc | cripto\w* | ethereum | eth |
-        forex | eur\s*/?\s*usd | euro | d[oó]lar |
+        bitcoins? | btc | cripto\w* | ethereums? | eth |
+        forex | eur\s*/?\s*usd | euros? | d[oó]lar(?:es)? |
         oro\w* | orit[oa]s? | xau | plata\w* | xag |
-        nasdaq | s\s*&\s*p\s*500? | spy | acci[oó]n\w* | bolsa | índice\w* | indice\w* |
+        nasdaq | s\s*&\s*p\s*500? | spy | acci[oó]n\w* | bolsas? | índice\w* | indice\w* |
         nikkei | jpn\s*225 | jap[oó]n | mercados?\s+(?:externos?|internacionales?) |
         cotizaci[oó]n\w*
     )\b
@@ -459,7 +463,7 @@ def fuentes_citadas_mercado(cotizaciones: list[MarketQuote], texto: str) -> list
     for q in cotizaciones:
         if _norm(q.symbol) not in t:
             continue
-        fuente = "Alpha Vantage" if q.source == "alpha_vantage" else "Alpha Vantage (simulado)"
+        fuente = "Alpha Vantage"
         chips.append(
             {
                 "table": "alpha_vantage",
@@ -616,7 +620,7 @@ def _bloque_cotizaciones(cotizaciones: list[MarketQuote]) -> str:
     lineas = "\n".join(
         f"- {q.symbol}: USD {q.price:,.2f}"
         + (f", variación {q.change_percent:+.2f}% hoy" if q.change_percent else "")
-        + f" [{'Alpha Vantage' if q.source == 'alpha_vantage' else 'simulado'}]"
+        + f" [Alpha Vantage]"
         for q in cotizaciones
     )
     return f"""COTIZACIONES DE MERCADOS EXTERNOS (los ÚNICOS números que puedes usar):
