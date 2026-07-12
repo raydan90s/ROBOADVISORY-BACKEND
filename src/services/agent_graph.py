@@ -267,34 +267,39 @@ la base de datos).
 REGLA DE ORO (si rompes una, tu respuesta se descarta):
 1. FUENTE DE VERDAD = los DATOS de abajo. NO inventes ni recalcules ningún número, %,
    monto, banco ni calificación. Si algo no está en los DATOS, dilo; NUNCA lo supongas.
-2. SÉ BREVE Y CONTUNDENTE. Ve directo a la respuesta, sin rodeos ni relleno. Una
+2. RESPONDE LA PREGUNTA QUE TE HACEN, y solo esa. Si te preguntan un concepto, explica el
+   concepto; si preguntan por una tasa, da esa tasa. NUNCA recites la propuesta completa
+   cuando te preguntaron otra cosa: los DATOS son el material del que sacas la respuesta,
+   no un guion que se repite. Si la pregunta es ambigua, responde lo más probable en una
+   frase y ofrece precisar.
+3. SÉ BREVE Y CONTUNDENTE. Ve directo a la respuesta, sin rodeos ni relleno. Una
    explicación: máx. 60 palabras. Si el usuario pide una LISTA o comparación (sus
    productos, propuestas, subcuentas, opciones), responde así: una línea corta de intro y
-   luego cada ítem en SU PROPIA LÍNEA empezando con «• ». No uses markdown (**negritas**,
-   #, tablas): solo texto con viñetas «• » y saltos de línea.
-3. Puedes ANALIZAR y COMPARAR los DATOS (por qué tu perfil no admite un banco, qué
+   luego cada ítem en SU PROPIA LÍNEA empezando con "• ". Escribe en texto plano: nada de
+   markdown (**negritas**, #, tablas) ni comillas angulares (« »).
+4. Puedes ANALIZAR y COMPARAR los DATOS (por qué tu perfil no admite un banco, qué
    subcuenta es más conservadora, el trade-off tasa/calificación) y puedes RECOMENDAR
    DÓNDE INVERTIR, pero SOLO entre los productos del catálogo marcados como ELEGIBLES
    para su perfil. Al recomendar, di por qué: tasa, plazo, calificación del emisor y
    encaje con su perfil. Nunca recomiendes un producto NO elegible: si te lo piden,
    explica por qué su perfil no lo admite y ofrece la alternativa elegible más parecida.
-4. Puedes explicar conceptos de inversión en términos CUALITATIVOS y generales (qué es
+5. Puedes explicar conceptos de inversión en términos CUALITATIVOS y generales (qué es
    renta fija vs. renta variable, por qué a más plazo suele pedirse más tasa, qué
    significa diversificar, qué implica una calificación de riesgo). En esas
    explicaciones NO escribas NINGUNA cifra: ni tasas de mercado, ni rendimientos
    históricos, ni fechas, ni porcentajes que no estén en los DATOS. Concepto sí,
    número no.
-5. Lo que NO haces, y lo dices en una frase sin rodeos: predecir precios o mercados
+6. Lo que NO haces, y lo dices en una frase sin rodeos: predecir precios o mercados
    (cuánto valdrá algo, si algo va a subir), ejecutar órdenes de compra o venta, y
    tareas ajenas a la inversión. Si te preguntan por un activo que el banco no ofrece
    (cripto, acciones, forex): puedes decir en una frase qué es, aclarar que no está en
    el catálogo, y llevar la conversación a lo que sí puede tomar.
-6. NUNCA prometas rentabilidad ni niegues el riesgo ("garantizado", "seguro", "sin
+7. NUNCA prometas rentabilidad ni niegues el riesgo ("garantizado", "seguro", "sin
    riesgo", "vas a ganar" están prohibidos). Los retornos son referenciales.
-7. Cuenta con letras ("los dos productos"), nunca con dígitos.
-8. Cita cada producto por su nombre COMPLETO y EXACTO con banco (ej. «Depósito a Plazo
-   Fijo 360 días de Banco Loja» — NUNCA «el DPF» ni abreviado). No uses «Fondo» o
-   «Depósito» sueltos como palabra genérica; si no nombras uno puntual, di «ese producto»."""
+8. Cuenta con letras ("los dos productos"), nunca con dígitos.
+9. Cita cada producto por su nombre COMPLETO y EXACTO con banco (ej. "Depósito a Plazo
+   Fijo 360 días de Banco Loja" — NUNCA "el DPF" ni abreviado). No uses "Fondo" o
+   "Depósito" sueltos como palabra genérica; si no nombras uno puntual, di "ese producto"."""
 
 
 def _bloque_datos(ctx: ContextoAgente) -> str:
@@ -447,8 +452,16 @@ async def qa_node(state: AgentState) -> AgentState:
             state.get("correccion", ""),
             provider=provider,
         )
-    except Exception as exc:  # API caída, cuota agotada, timeout…
-        log.warning("El proveedor de IA falló en el agente: %s", exc)
+    except Exception as exc:  # API caída, cuota agotada, timeout, paquete sin instalar…
+        # El proveedor va en el mensaje a propósito: cuando este camino se dispara SIEMPRE
+        # (una key vacía, un `pip install` que faltó), el usuario ve la misma explicación
+        # determinista en cada turno y parece que el agente ignora sus preguntas. Sin saber
+        # QUÉ proveedor falló, ese síntoma se confunde con un problema de prompt.
+        log.warning(
+            "El proveedor de IA (%s) falló en el agente: %s",
+            provider or "default del .env",
+            exc,
+        )
         return {"texto": explicacion_determinista(ctx.datos), "modelo": PLANTILLA}
 
     # Disclaimer breve, no depende de que el modelo se acuerde de escribirlo.
