@@ -326,6 +326,25 @@ def _cargar_historial(conn: Connection, session_id: str) -> list[tuple[str, str]
     return [(mapa[f["role"]], f["content"]) for f in reversed(filas)]
 
 
+def _ultima_ruta(conn: Connection, thread_id: str) -> str | None:
+    """La ruta del último turno del asistente en este hilo (de `metadata.ruta`).
+
+    Le da memoria al router: un follow-up sin palabra clave ("¿y cómo lo ves?") después
+    de una respuesta de mercados sigue en mercados en vez de caer al banco y decir "no
+    tengo ese dato". Devuelve None si aún no hay turnos del asistente."""
+    fila = conn.execute(
+        """
+        select metadata->>'ruta' as ruta
+        from public.llm_interactions
+        where thread_id = %s and role = 'assistant' and metadata->>'ruta' is not null
+        order by created_at desc
+        limit 1
+        """,
+        (thread_id,),
+    ).fetchone()
+    return fila["ruta"] if fila else None
+
+
 def _guardar_turno(
     conn: Connection,
     session_id: str,
@@ -398,6 +417,7 @@ async def chat(payload: AgentChatRequest, usuario: CurrentUser) -> AgentChatResp
         # El cliente solo conversa sobre lo suyo; el asesor, sobre lo de cualquiera.
         exige_dueno_o_asesor(contexto.datos.investor.investor_id, usuario)
         historial = _cargar_historial(conn, session_id)
+        ruta_previa = _ultima_ruta(conn, session_id)
 
     # 2. Correr el grafo (fuera de la transacción: la llamada al LLM puede tardar).
     estado = await responder(
@@ -406,6 +426,7 @@ async def chat(payload: AgentChatRequest, usuario: CurrentUser) -> AgentChatResp
         historial,
         provider=payload.provider,
         simbolos_forzados=payload.symbols,
+        ruta_previa=ruta_previa,
     )
 
     # Prueba en el terminal de qué proveedor/modelo/ruta contestó este turno.
