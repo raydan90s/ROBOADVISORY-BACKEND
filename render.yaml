@@ -36,9 +36,10 @@ services:
       - key: TWILIO_AUTH_TOKEN
         sync: false
       # Tiene que coincidir CARÁCTER POR CARÁCTER con la URL configurada en la consola
-      # de Twilio: la firma se calcula sobre esta cadena.
+      # de Twilio: la firma se calcula sobre esta cadena. Se gestiona en el dashboard
+      # (fuera del repo), igual que el auth token.
       - key: TWILIO_WEBHOOK_URL
-        value: 
+        sync: false
       - key: TWILIO_VALIDAR_FIRMA
         value: "true"
       # El bot corre siempre sobre OpenAI (es donde hay cuota), aunque el front siga
