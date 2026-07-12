@@ -357,7 +357,7 @@ def _guardar_turno(
                 {
                     "sources": estado.get("sources", []),
                     "guardrail_motivos": estado.get("motivos", []),
-                    "en_alcance": estado.get("en_alcance", True),
+                    "ruta": estado.get("ruta", "bancario"),
                 }
             ),
         ),
@@ -387,23 +387,25 @@ async def chat(payload: AgentChatRequest, usuario: CurrentUser) -> AgentChatResp
     # 2. Correr el grafo (fuera de la transacción: la llamada al LLM puede tardar).
     estado = await responder(contexto, payload.mensaje, historial, provider=payload.provider)
 
-    # Prueba en el terminal de qué proveedor/modelo contestó este turno.
+    # Prueba en el terminal de qué proveedor/modelo/ruta contestó este turno.
     log.warning(
-        "[agent] provider_pedido=%s -> modelo=%s | guardrail=%s | en_alcance=%s",
+        "[agent] provider_pedido=%s -> modelo=%s | guardrail=%s | ruta=%s",
         payload.provider or "(default .env)",
         estado["modelo"],
         estado["guardrail_passed"],
-        estado.get("en_alcance"),
+        estado.get("ruta"),
     )
 
     # 3. Guardar los dos turnos.
     with get_connection() as conn:
         _guardar_turno(conn, session_id, proposal_id, payload.mensaje, estado)
 
+    ruta = estado.get("ruta", "bancario")
     return AgentChatResponse(
         texto=estado["texto"],
         sources=[SourceChip(**c) for c in estado.get("sources", [])],
         guardrail_passed=estado["guardrail_passed"],
         modelo=estado["modelo"],
-        en_alcance=estado.get("en_alcance", True),
+        en_alcance=ruta != "rechazo",
+        ruta=ruta,
     )

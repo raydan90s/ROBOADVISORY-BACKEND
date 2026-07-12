@@ -55,3 +55,9 @@ class AgentChatResponse(BaseModel):
     # el rechazo por fuera de alcance. Útil para la demo y la auditoría.
     modelo: str
     en_alcance: bool = True
+
+    # La ruta que tomó el router: "bancario" (solo datos del banco) | "mixto" (banco +
+    # Alpha Vantage) | "externo" (100% Alpha Vantage) | "rechazo" (fuera de alcance).
+    # El front la usa para diferenciar visualmente la burbuja (borde/ícono de aviso en
+    # "mixto"/"externo": son instrumentos simulados, fuera del catálogo del banco).
+    ruta: str = "bancario"

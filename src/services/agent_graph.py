@@ -1,19 +1,38 @@
 """El agente conversacional como grafo de estados (LangGraph).
 
 Responde al criterio de evaluación #1 (arquitectura agéntica) y refuerza el #3
-(antialucinación). El grafo es corto y auditable:
+(antialucinación). El router clasifica cada mensaje en una de 3 rutas (más el
+rechazo), y el grafo es corto y auditable:
 
-        entrada → router ─┬─(en alcance)→ qa → guardrail ─┬─(ok)──────────→ FIN
-                          │                               ├─(falla, 1 vez)→ qa
-                          │                               └─(reincide)────→ fallback → FIN
-                          └─(fuera de alcance)──────────────────────────→ refuse → FIN
+    entrada → router ─┬─(A: bancario)→ qa ──────┐
+                       ├─(B: mixto)  → mixto ────┤
+                       ├─(C: externo)→ mercado ──┼→ guardrail ─┬─(ok)──────────→ FIN
+                       │                         │             ├─(falla,1 vez)→ (misma ruta)
+                       └─(fuera de alcance)───────────────────→│             └─(reincide)───→ fallback → FIN
+                                                                (refuse) ──────────────────────────────→ FIN
 
-El prompt es **unificado**: un bloque estático (identidad + regla de oro + DATOS del
-inversionista) seguido de la conversación (historial + pregunta). Los principios:
+- **Ruta A (bancario)**: usa exclusivamente los DATOS del inversionista que salen de
+  Postgres (perfil, propuesta, catálogo del banco, subcuentas). Es el flujo original.
+- **Ruta B (mixto)**: A + cotizaciones de Alpha Vantage (`market_data.py`), para
+  preguntas que comparan el banco con mercados externos.
+- **Ruta C (externo)**: 100% Alpha Vantage — acciones, forex, cripto, índices. NO usa
+  el catálogo del banco.
+- **Rechazo**: predicciones de mercado, órdenes de compra/venta y tareas ajenas
+  (traducir, programar, etc.) siguen fuera de alcance en las tres rutas.
+
+REGLA DE CONTENCIÓN: ningún nodo de B ni de C escribe en `proposals` /
+`proposal_items` — solo leen (Alpha Vantage, y en B también el contexto ya cargado
+del banco) y devuelven texto. La única escritura que hace cualquier ruta es el
+historial de chat (`llm_interactions`), en `agent_controller._guardar_turno`, igual
+para las 3 rutas.
+
+El prompt es **unificado**: un bloque estático (identidad + regla de oro + DATOS)
+seguido de la conversación (historial + pregunta). Los principios:
 
 - La **fuente de verdad NO es la memoria del modelo**: son los DATOS que salen de la
-  base y se inyectan en el prompt. Todo número que el modelo escriba se compara contra
-  `ContextoPermitido` con el mismo `guardrails.validar` que valida las propuestas.
+  base (Ruta A/B) o de Alpha Vantage (Ruta B/C), inyectados en el prompt. Todo número
+  que el modelo escriba se compara contra `ContextoPermitido` con el mismo
+  `guardrails.validar` que valida las propuestas.
 - El modelo (proveedor y versión) se elige desde el `.env`; ver `llm_provider.py`.
 - **No hay tools ni acciones.** El agente solo lee y explica; no ejecuta ni agenda
   nada. Si el guardarraíl no puede confirmar el texto, cae a una explicación
@@ -29,6 +48,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, TypedDict
 
+from src.services import market_data
 from src.services.ai_agent import (
     PLANTILLA,
     DatosExplicacion,
@@ -38,14 +58,28 @@ from src.services.ai_agent import (
 )
 from src.services.guardrails import ContextoPermitido, validar
 from src.services.llm_provider import crear_llm, hay_api_key, modelo_activo
+from src.services.market_data import MarketQuote
 
 log = logging.getLogger(__name__)
 
 REFUSE = "refuse"  # marca de modelo para los turnos fuera de alcance
 
+RUTA_BANCARIO = "bancario"  # Ruta A: solo datos del banco
+RUTA_MIXTO = "mixto"  # Ruta B: banco + Alpha Vantage
+RUTA_EXTERNO = "externo"  # Ruta C: 100% Alpha Vantage
+RUTA_RECHAZO = "rechazo"  # fuera de alcance en cualquier ruta
+
 # Disclaimer breve para el chat (el de la propuesta es largo y aquí lo haría pesado en
 # cada turno). Mantiene el criterio HU2-3: es propuesta, no orden ni promesa.
 DISCLAIMER_CHAT = "Es una propuesta referencial y la revisa un asesor autorizado."
+
+# El aviso NO negociable de las Rutas B y C (pedido explícito del reto): estos
+# instrumentos no son del banco, y la respuesta tiene que decirlo siempre, la
+# escriba el modelo o la plantilla determinista.
+DISCLAIMER_SIMULACION = (
+    "Esta es una simulación educativa con datos de mercados externos (Alpha Vantage). "
+    "Estos instrumentos NO están en el catálogo del banco ni forman parte de tu propuesta."
+)
 
 # Texto fijo de rechazo (ARQUITECTURA-IA §6). No es prompt engineering esperanzado:
 # es un nodo del grafo, y por eso es un caso de prueba reproducible.
@@ -57,18 +91,17 @@ TEXTO_RECHAZO = (
 
 
 # ===========================================================================
-# Router: ¿la pregunta es sobre los datos del inversionista, o fuera de alcance?
+# Router: ¿bancario, mixto, 100% externo, o fuera de alcance?
 # ===========================================================================
 
-# Patrones claramente fuera de alcance. El objetivo NO es entender la pregunta, sino
-# atajar los casos que el reto pide rechazar: predicción de mercados, otros activos
-# fuera del catálogo bancario, órdenes de compra/venta y tareas ajenas (código, etc.).
-# Lo dudoso se deja pasar al qa_node, cuyo prompt también acota el alcance, y al
-# guardarraíl. Es una primera línea determinista, no la única.
+# Fuera de alcance en CUALQUIER ruta: predecir movimientos de mercado (dar una
+# cotización actual es Ruta C; predecir hacia dónde va es otra cosa, prohibida
+# igual que en el catálogo del banco), órdenes de compra/venta, y tareas ajenas.
+# Lo dudoso se deja pasar al nodo correspondiente, cuyo prompt también acota el
+# alcance, y al guardarraíl. Es una primera línea determinista, no la única.
 _FUERA_DE_ALCANCE = re.compile(
     r"""
     \b(?:
-        bitcoin | cripto\w* | ethereum | forex | nasdaq | s&p | acci[oó]n\w* |
         va\s+a\s+(?:subir|bajar|caer|crecer|rendir) | subir[áa] | bajar[áa] |
         predic\w* | pron[oó]stic\w* | proyecci[oó]n | qu[eé]\s+va\s+a\s+pasar |
         c[oó]mprame | v[eé]ndeme | ejecuta\w* | invierte\s+por\s+m[ií] |
@@ -80,9 +113,60 @@ _FUERA_DE_ALCANCE = re.compile(
     re.IGNORECASE | re.VERBOSE,
 )
 
+# Mercados externos: cripto, forex, índices, acciones — el vocabulario que el router
+# original rechazaba de plano y que ahora abre la Ruta B o C en vez de un rechazo.
+_MERCADO_EXTERNO = re.compile(
+    r"""
+    \b(?:
+        bitcoin | btc | cripto\w* | ethereum | eth |
+        forex | eur\s*/?\s*usd | euro | d[oó]lar |
+        oro | xau | plata | xag |
+        nasdaq | s\s*&\s*p\s*500? | spy | acci[oó]n\w* | bolsa | índice\w* | indice\w* |
+        nikkei | jpn\s*225 | jap[oó]n | mercados?\s+(?:externos?|internacionales?) |
+        cotizaci[oó]n\w*
+    )\b
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
 
-def _fuera_de_alcance(mensaje: str) -> bool:
-    return bool(_FUERA_DE_ALCANCE.search(mensaje))
+# Señales de que, ADEMÁS de preguntar por mercados, el cliente quiere comparar/mezclar
+# con el banco (Ruta B). Sin esta señal, una pregunta de mercado es 100% externa (C).
+_MENCION_BANCO = re.compile(
+    r"""
+    \b(?:
+        mi\s+perfil | mi\s+propuesta | mi\s+cartera | mi\s+subcuenta | mis\s+subcuentas |
+        banco\w* | dep[oó]sito\w* | dpf | fondo\w* | elegib\w* | cat[aá]logo |
+        compar\w* | versus | \bvs\b | tasa\w*
+    )\b
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+# Palabra clave del mensaje → símbolo de `market_data.py`. Si el mensaje no nombra
+# ninguno en particular ("¿cómo están los mercados?"), se piden los 5 del ticker.
+_SIMBOLO_POR_PALABRA: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"bitcoin|btc|cripto\w*", re.IGNORECASE), "BTCUSD"),
+    (re.compile(r"oro\b|xau", re.IGNORECASE), "XAUUSD"),
+    (re.compile(r"nikkei|jpn\s*225|jap[oó]n", re.IGNORECASE), "JPN225"),
+    (re.compile(r"s\s*&\s*p\s*500?|spy|nasdaq|acci[oó]n\w*|bolsa", re.IGNORECASE), "SPY"),
+    (re.compile(r"eur\s*/?\s*usd|euro|d[oó]lar", re.IGNORECASE), "EURUSD"),
+]
+
+
+def _clasificar_ruta(mensaje: str) -> str:
+    """El router determinista de las 3 rutas + rechazo. Ver el diagrama del módulo."""
+    if _FUERA_DE_ALCANCE.search(mensaje):
+        return RUTA_RECHAZO
+    if not _MERCADO_EXTERNO.search(mensaje):
+        return RUTA_BANCARIO
+    return RUTA_MIXTO if _MENCION_BANCO.search(mensaje) else RUTA_EXTERNO
+
+
+def _simbolos_de(mensaje: str) -> list[str]:
+    """Los símbolos que el mensaje nombra explícitamente, o los 5 del ticker si no nombra ninguno."""
+    encontrados = [simbolo for patron, simbolo in _SIMBOLO_POR_PALABRA if patron.search(mensaje)]
+    # sin duplicados, conservando el orden de aparición
+    return list(dict.fromkeys(encontrados)) or list(market_data.SIMBOLOS_DEFAULT)
 
 
 # ===========================================================================
@@ -248,6 +332,69 @@ def fuentes_citadas(ctx: ContextoAgente, texto: str) -> list[dict[str, Any]]:
     return chips
 
 
+# ===========================================================================
+# Rutas B/C: contexto y fuentes de Alpha Vantage
+# ===========================================================================
+
+
+def contexto_permitido_mercado(
+    cotizaciones: list[MarketQuote], base: ContextoPermitido | None = None
+) -> ContextoPermitido:
+    """El conjunto citable de las Rutas B/C: los precios y símbolos que trajo Alpha Vantage.
+
+    Ruta C parte de un `ContextoPermitido` vacío (no debe citar NADA del banco); Ruta B
+    parte del `contexto_permitido_agente` normal y le SUMA esto — así el modelo puede
+    comparar "tu depósito rinde X% vs. Bitcoin varió Y% hoy" sin que el guardarraíl
+    trate el precio de Bitcoin como un número inventado.
+    """
+    numeros = set(base.numeros) if base else set()
+    instrumentos = set(base.instrumentos) if base else set()
+    instituciones = set(base.instituciones) if base else set()
+    calificaciones = set(base.calificaciones) if base else set()
+
+    for q in cotizaciones:
+        numeros.add(Decimal(str(q.price)))
+        if q.change_percent:
+            # el signo no sobrevive la extracción de dígitos del guardarraíl: se permite
+            # el valor absoluto también, para que "-0.32%" y "0.32%" ambos calcen.
+            numeros.add(Decimal(str(q.change_percent)))
+            numeros.add(Decimal(str(abs(q.change_percent))))
+        instrumentos.add(q.symbol)
+
+    return ContextoPermitido(
+        numeros=numeros,
+        instrumentos=instrumentos,
+        instituciones=instituciones,
+        calificaciones=calificaciones,
+    )
+
+
+def _texto_cotizaciones(cotizaciones: list[MarketQuote]) -> str:
+    return "; ".join(
+        f"{q.symbol}: USD {q.price:,.2f}"
+        + (f" ({q.change_percent:+.2f}% hoy)" if q.change_percent else "")
+        for q in cotizaciones
+    )
+
+
+def fuentes_citadas_mercado(cotizaciones: list[MarketQuote], texto: str) -> list[dict[str, Any]]:
+    """Source chips de Alpha Vantage: solo los símbolos que la respuesta realmente citó."""
+    t = _norm(texto)
+    chips: list[dict[str, Any]] = []
+    for q in cotizaciones:
+        if _norm(q.symbol) not in t:
+            continue
+        fuente = "Alpha Vantage" if q.source == "alpha_vantage" else "Alpha Vantage (simulado)"
+        chips.append(
+            {
+                "table": "alpha_vantage",
+                "record_id": q.symbol,
+                "label": f"{q.symbol} · USD {q.price:,.2f} · {fuente}",
+            }
+        )
+    return chips
+
+
 _REGLA_DE_ORO = """Eres el asistente virtual de un robo-advisor (sin nombre propio; no te
 presentes con uno). Conoces a ESTE inversionista: su perfil, puntaje, propuesta(s) y qué
 del catálogo puede tomar. Explicas y analizas SUS datos con los DATOS de abajo (salen de
@@ -345,6 +492,72 @@ def build_system_prompt(ctx: ContextoAgente) -> str:
 
 
 # ===========================================================================
+# Prompts de las Rutas B (mixto) y C (externo)
+# ===========================================================================
+
+_REGLA_DE_ORO_MERCADO = """Eres un asistente educativo de mercados externos (fuera del
+catálogo del banco): acciones, forex, cripto e índices.
+
+REGLA DE ORO (si rompes una, tu respuesta se descarta):
+1. FUENTE DE VERDAD = las COTIZACIONES de abajo (Alpha Vantage). NO inventes ni
+   recalcules ningún precio ni variación porcentual.
+2. NO prediges hacia dónde va un precio, NO recomiendas comprar ni vender, y NO
+   prometes rentabilidad ("garantizado", "seguro", "sin riesgo", "vas a ganar"
+   prohibidos). Son cotizaciones de referencia, no una recomendación.
+3. SÉ BREVE: máx. 60 palabras, tono cercano, tuteando, sin markdown.
+4. SIEMPRE deja claro que es una simulación educativa y que estos instrumentos no
+   están en el catálogo del banco (ver el AVISO abajo — inclúyelo o parafraséalo)."""
+
+
+def _bloque_cotizaciones(cotizaciones: list[MarketQuote]) -> str:
+    lineas = "\n".join(
+        f"- {q.symbol}: USD {q.price:,.2f}"
+        + (f", variación {q.change_percent:+.2f}% hoy" if q.change_percent else "")
+        + f" [{'Alpha Vantage' if q.source == 'alpha_vantage' else 'simulado'}]"
+        for q in cotizaciones
+    )
+    return f"""COTIZACIONES DE MERCADOS EXTERNOS (los ÚNICOS números que puedes usar):
+{lineas}
+
+AVISO OBLIGATORIO: {DISCLAIMER_SIMULACION}"""
+
+
+def build_system_prompt_externo(cotizaciones: list[MarketQuote]) -> str:
+    """Ruta C: 100% Alpha Vantage. El prompt NO incluye nada del catálogo del banco."""
+    return f"{_REGLA_DE_ORO_MERCADO}\n\n{_bloque_cotizaciones(cotizaciones)}"
+
+
+def build_system_prompt_mixto(ctx: ContextoAgente, cotizaciones: list[MarketQuote]) -> str:
+    """Ruta B: los DATOS del banco (regla de oro normal) + las cotizaciones externas.
+
+    Reutiliza `build_system_prompt` tal cual —el cliente sigue sin poder inventarse un
+    producto del banco— y le añade el bloque de mercados con su propia regla de oro
+    (no predecir, no prometer) y el aviso de simulación.
+    """
+    return (
+        f"{build_system_prompt(ctx)}\n\n"
+        "Además de tus datos del banco, también puedes comparar con mercados externos "
+        "usando SOLO estas cotizaciones (mismas reglas: no inventes precios, no "
+        "predigas, no prometas rentabilidad):\n\n"
+        f"{_bloque_cotizaciones(cotizaciones)}"
+    )
+
+
+def _explicacion_mercado_determinista(cotizaciones: list[MarketQuote]) -> str:
+    """Fallback de la Ruta C: pasa el guardarraíl por construcción (números de `cotizaciones`)."""
+    return f"Cotizaciones de referencia: {_texto_cotizaciones(cotizaciones)}.\n\n{DISCLAIMER_SIMULACION}"
+
+
+def _explicacion_mixta_determinista(ctx: ContextoAgente, cotizaciones: list[MarketQuote]) -> str:
+    """Fallback de la Ruta B: la explicación de la propuesta + las cotizaciones, ambas seguras."""
+    return (
+        f"{explicacion_determinista(ctx.datos)}\n\n"
+        f"Cotizaciones de mercados externos de referencia: {_texto_cotizaciones(cotizaciones)}.\n\n"
+        f"{DISCLAIMER_SIMULACION}"
+    )
+
+
+# ===========================================================================
 # El LLM (el proveedor lo elige el .env; ver llm_provider.py)
 # ===========================================================================
 
@@ -381,7 +594,10 @@ class AgentState(TypedDict, total=False):
     # Proveedor elegido en el front para ESTE turno (None = el default del .env).
     provider: str | None
 
-    en_alcance: bool
+    # Ruta elegida por el router: "bancario" | "mixto" | "externo" | "rechazo".
+    ruta: str
+    # Cotizaciones de Alpha Vantage pedidas para este turno (vacío en Ruta A).
+    cotizaciones: list[MarketQuote]
     correccion: str
 
     texto: str
@@ -398,12 +614,12 @@ class AgentState(TypedDict, total=False):
 
 
 def router_node(state: AgentState) -> AgentState:
-    """Decide si la pregunta cae dentro del alcance del agente."""
-    return {"en_alcance": not _fuera_de_alcance(state["mensaje"])}
+    """Clasifica el mensaje en una de las 3 rutas (o rechazo). Ver el diagrama del módulo."""
+    return {"ruta": _clasificar_ruta(state["mensaje"])}
 
 
 async def qa_node(state: AgentState) -> AgentState:
-    """Genera la respuesta con Gemini. Si el LLM no está o falla, cae a la plantilla.
+    """Ruta A (bancario): genera con el LLM usando SOLO los datos del banco.
 
     El fallback determinista NO responde la pregunta literal, pero es un texto veraz
     y con fuentes que jamás inventa un número — el piso de calidad de la demo.
@@ -434,9 +650,102 @@ async def qa_node(state: AgentState) -> AgentState:
     return {"texto": texto, "modelo": modelo_activo(provider)}
 
 
+async def mercado_node(state: AgentState) -> AgentState:
+    """Ruta C: 100% Alpha Vantage. NUNCA lee ni cita el catálogo del banco.
+
+    Contención: este nodo solo llama a `market_data` (lectura) y al LLM; no ejecuta
+    ningún INSERT/UPDATE — ni aquí ni en ninguna tabla de `proposals`.
+    """
+    cotizaciones = await market_data.obtener_cotizaciones(_simbolos_de(state["mensaje"]))
+    system = build_system_prompt_externo(cotizaciones)
+    provider = state.get("provider")
+    # El guardarraíl de esta ruta solo permite los números de Alpha Vantage: CERO
+    # contexto del banco, aunque `state["contexto"]` (el del banco) siga cargado.
+    ctx_permitido = contexto_permitido_mercado(cotizaciones)
+
+    if not hay_api_key(provider):
+        log.warning("Sin API key del proveedor de IA: Ruta C usa la cotización sin redactar.")
+        return {
+            "texto": _explicacion_mercado_determinista(cotizaciones),
+            "modelo": PLANTILLA,
+            "cotizaciones": cotizaciones,
+            "ctx": ctx_permitido,
+        }
+
+    try:
+        texto = await _llamar_llm(
+            system,
+            state.get("historial", []),
+            state["mensaje"],
+            state.get("correccion", ""),
+            provider=provider,
+        )
+    except Exception as exc:
+        log.warning("El proveedor de IA falló en la Ruta C: %s", exc)
+        return {
+            "texto": _explicacion_mercado_determinista(cotizaciones),
+            "modelo": PLANTILLA,
+            "cotizaciones": cotizaciones,
+            "ctx": ctx_permitido,
+        }
+
+    if "simulación educativa" not in texto.lower():
+        texto = f"{texto}\n\n{DISCLAIMER_SIMULACION}"
+    return {
+        "texto": texto,
+        "modelo": modelo_activo(provider),
+        "cotizaciones": cotizaciones,
+        "ctx": ctx_permitido,
+    }
+
+
+async def mixto_node(state: AgentState) -> AgentState:
+    """Ruta B: datos del banco + Alpha Vantage. Solo lectura de ambos, igual que Ruta A/C."""
+    ctx = state["contexto"]
+    cotizaciones = await market_data.obtener_cotizaciones(_simbolos_de(state["mensaje"]))
+    system = build_system_prompt_mixto(ctx, cotizaciones)
+    provider = state.get("provider")
+    ctx_permitido = contexto_permitido_mercado(cotizaciones, base=contexto_permitido_agente(ctx))
+
+    if not hay_api_key(provider):
+        log.warning("Sin API key del proveedor de IA: Ruta B usa la explicación determinista.")
+        return {
+            "texto": _explicacion_mixta_determinista(ctx, cotizaciones),
+            "modelo": PLANTILLA,
+            "cotizaciones": cotizaciones,
+            "ctx": ctx_permitido,
+        }
+
+    try:
+        texto = await _llamar_llm(
+            system,
+            state.get("historial", []),
+            state["mensaje"],
+            state.get("correccion", ""),
+            provider=provider,
+        )
+    except Exception as exc:
+        log.warning("El proveedor de IA falló en la Ruta B: %s", exc)
+        return {
+            "texto": _explicacion_mixta_determinista(ctx, cotizaciones),
+            "modelo": PLANTILLA,
+            "cotizaciones": cotizaciones,
+            "ctx": ctx_permitido,
+        }
+
+    if "simulación educativa" not in texto.lower():
+        texto = f"{texto}\n\n{DISCLAIMER_SIMULACION}"
+    return {
+        "texto": texto,
+        "modelo": modelo_activo(provider),
+        "cotizaciones": cotizaciones,
+        "ctx": ctx_permitido,
+    }
+
+
 def guardrail_node(state: AgentState) -> AgentState:
-    """Valida el texto contra el conjunto permitido. Si falla, prepara el reintento."""
-    # Si la respuesta ya vino de la plantilla (Gemini caído), pasa por construcción.
+    """Valida el texto contra el conjunto permitido de la ruta. Si falla, prepara el reintento."""
+    # Si la respuesta ya vino de la plantilla (LLM caído/ausente), pasa por construcción.
     if state["modelo"] == PLANTILLA:
         return {"guardrail_passed": True, "motivos": []}
 
@@ -445,11 +754,11 @@ def guardrail_node(state: AgentState) -> AgentState:
         return {"guardrail_passed": True, "motivos": []}
 
     intentos = state.get("retry_count", 0) + 1
-    log.warning("Guardarraíl rechazó al agente (intento %s): %s", intentos, veredicto.motivos)
+    log.warning("Guardarraíl rechazó al agente (intento %s, ruta %s): %s", intentos, state.get("ruta"), veredicto.motivos)
     correccion = (
-        "Tu respuesta anterior fue RECHAZADA por el validador del banco:\n"
+        "Tu respuesta anterior fue RECHAZADA por el validador:\n"
         + "\n".join(f"- {m}" for m in veredicto.motivos)
-        + "\nReescríbela usando EXCLUSIVAMENTE los números, productos y bancos de los DATOS."
+        + "\nReescríbela usando EXCLUSIVAMENTE los números y nombres de los DATOS/COTIZACIONES."
     )
     return {
         "guardrail_passed": False,
@@ -471,29 +780,43 @@ def refuse_node(state: AgentState) -> AgentState:
 
 
 def fallback_node(state: AgentState) -> AgentState:
-    """Dos rechazos: no se muestra nada inventado. Se cae a la explicación determinista."""
-    return {
-        "texto": explicacion_determinista(state["contexto"].datos),
-        "modelo": PLANTILLA,
-        "guardrail_passed": True,
-    }
+    """Dos rechazos del guardarraíl: se cae a una explicación determinista, según la ruta.
+
+    Nunca se muestra nada inventado, y una pregunta 100% de mercado (Ruta C) no debe
+    caer en el fallback del banco (mostraría la propuesta, que no viene al caso).
+    """
+    ruta = state.get("ruta", RUTA_BANCARIO)
+    cotizaciones = state.get("cotizaciones", [])
+    if ruta == RUTA_EXTERNO:
+        texto = _explicacion_mercado_determinista(cotizaciones)
+    elif ruta == RUTA_MIXTO:
+        texto = _explicacion_mixta_determinista(state["contexto"], cotizaciones)
+    else:
+        texto = explicacion_determinista(state["contexto"].datos)
+    return {"texto": texto, "modelo": PLANTILLA, "guardrail_passed": True}
 
 
 # ===========================================================================
 # Aristas condicionales
 # ===========================================================================
 
+_NODO_DE_RUTA = {RUTA_BANCARIO: "qa", RUTA_MIXTO: "mixto", RUTA_EXTERNO: "mercado"}
+
 
 def _tras_router(state: AgentState) -> str:
-    return "qa" if state["en_alcance"] else "refuse"
+    ruta = state["ruta"]
+    return "refuse" if ruta == RUTA_RECHAZO else _NODO_DE_RUTA[ruta]
 
 
 def _tras_guardrail(state: AgentState) -> str:
     if state["guardrail_passed"]:
         return "fin"
-    # Un solo reintento: retry_count llega a 1 en el primer fallo (→ qa) y a 2 en el
-    # segundo (→ fallback). Nunca se le muestra al usuario un texto sin validar.
-    return "qa" if state.get("retry_count", 0) < 2 else "fallback"
+    # Un solo reintento, y a la MISMA ruta que generó el texto rechazado: retry_count
+    # llega a 1 en el primer fallo y a 2 en el segundo. Nunca se le muestra al usuario
+    # un texto sin validar.
+    if state.get("retry_count", 0) >= 2:
+        return "fallback"
+    return _NODO_DE_RUTA[state["ruta"]]
 
 
 # ===========================================================================
@@ -505,15 +828,23 @@ def _construir_grafo():
     g = StateGraph(AgentState)
     g.add_node("router", router_node)
     g.add_node("qa", qa_node)
+    g.add_node("mixto", mixto_node)
+    g.add_node("mercado", mercado_node)
     g.add_node("guardrail", guardrail_node)
     g.add_node("refuse", refuse_node)
     g.add_node("fallback", fallback_node)
 
     g.set_entry_point("router")
-    g.add_conditional_edges("router", _tras_router, {"qa": "qa", "refuse": "refuse"})
-    g.add_edge("qa", "guardrail")
     g.add_conditional_edges(
-        "guardrail", _tras_guardrail, {"qa": "qa", "fallback": "fallback", "fin": END}
+        "router", _tras_router, {"qa": "qa", "mixto": "mixto", "mercado": "mercado", "refuse": "refuse"}
+    )
+    g.add_edge("qa", "guardrail")
+    g.add_edge("mixto", "guardrail")
+    g.add_edge("mercado", "guardrail")
+    g.add_conditional_edges(
+        "guardrail",
+        _tras_guardrail,
+        {"qa": "qa", "mixto": "mixto", "mercado": "mercado", "fallback": "fallback", "fin": END},
     )
     g.add_edge("refuse", END)
     g.add_edge("fallback", END)
@@ -537,21 +868,29 @@ async def responder(
 
     `contexto` es todo lo que el agente conoce del inversionista (de la base); `mensaje`
     la pregunta; `historial` los turnos previos (para continuidad); `provider` el modelo
-    elegido en el front (None = el default del .env).
+    elegido en el front (None = el default del .env). El router decide adentro del
+    grafo si el turno usa `contexto`, Alpha Vantage, o ambos (ver el diagrama arriba).
     """
     estado: AgentState = {
         "mensaje": mensaje,
         "contexto": contexto,
-        "ctx": contexto_permitido_agente(contexto),
+        "ctx": contexto_permitido_agente(contexto),  # override si la ruta es B/C
         "historial": historial or [],
         "provider": provider,
         "retry_count": 0,
     }
     final = await _GRAFO.ainvoke(estado)
+    ruta = final.get("ruta", RUTA_BANCARIO)
+    cotizaciones = final.get("cotizaciones", [])
+    texto = final.get("texto", "")
+
     # Los chips se calculan sobre el texto YA generado: solo las fuentes que citó.
-    # En un rechazo por alcance no hay nada que citar.
     if final.get("modelo") == REFUSE:
         final["sources"] = []
+    elif ruta == RUTA_EXTERNO:
+        final["sources"] = fuentes_citadas_mercado(cotizaciones, texto)
+    elif ruta == RUTA_MIXTO:
+        final["sources"] = fuentes_citadas(contexto, texto) + fuentes_citadas_mercado(cotizaciones, texto)
     else:
-        final["sources"] = fuentes_citadas(contexto, final.get("texto", ""))
+        final["sources"] = fuentes_citadas(contexto, texto)
     return final

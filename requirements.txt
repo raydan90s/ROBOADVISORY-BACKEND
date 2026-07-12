@@ -32,3 +32,6 @@ google-generativeai==0.8.3
 # molestan (se importan de forma perezosa en llm_provider.py).
 langchain-openai==0.2.14
 langchain-anthropic==0.3.0
+
+# --- Mercados externos: wrapper cacheado de Alpha Vantage ---
+cachetools==5.5.0

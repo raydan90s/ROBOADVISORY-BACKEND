@@ -43,6 +43,11 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: str = ""
     ANTHROPIC_MODEL: str = "claude-haiku-4-5"
 
+    # --- Mercados externos (ticker + agente Rutas B/C) ---
+    # Sin key, `market_data.py` sirve directamente las cotizaciones simuladas: el
+    # ticker y el chat nunca se rompen por falta de configuración.
+    ALPHA_VANTAGE_API_KEY: str = ""
+
     # Auth: firma de los JWT. En producción es obligatorio ponerlo en el entorno
     # (Render); si se queda el default, los tokens de todos los despliegues serían
     # falsificables con una llave pública.
