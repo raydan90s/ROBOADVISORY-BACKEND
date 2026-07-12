@@ -9,7 +9,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class PerfilRiesgo(str, Enum):
@@ -193,6 +193,38 @@ class AssetAllocation(BaseModel):
     calificacion: str | None = None
     calificacion_fuente: str | None = None
     calificacion_fecha: date | None = None
+
+
+class LineaAsignacion(BaseModel):
+    """Una línea de la asignación que el inversionista arma a mano."""
+
+    instrumento_code: str = Field(..., min_length=1, max_length=60)
+    # numeric(5,2) en la base: más de 2 decimales se perdería en silencio.
+    porcentaje: Decimal = Field(..., gt=0, le=100, max_digits=5, decimal_places=2)
+
+
+class AsignacionUpdate(BaseModel):
+    """Body del PUT /api/investor/proposals/{id}/allocation.
+
+    La coherencia (sin repetidos, suma exacta de 100) se valida acá. El catálogo y la
+    **elegibilidad por calificación** se validan en el controller contra la base: a
+    diferencia del asesor, el cliente no puede elegir un producto que su perfil no
+    admite — es la misma regla que pinta en gris el comparador.
+    """
+
+    allocations: list[LineaAsignacion] = Field(..., min_length=1)
+
+    @model_validator(mode="after")
+    def _coherente(self) -> "AsignacionUpdate":
+        codigos = [linea.instrumento_code for linea in self.allocations]
+        if len(set(codigos)) != len(codigos):
+            raise ValueError("La asignación repite un instrumento.")
+
+        total = sum((linea.porcentaje for linea in self.allocations), Decimal(0))
+        if total != Decimal(100):
+            raise ValueError(f"Los porcentajes deben sumar exactamente 100; suman {total}.")
+
+        return self
 
 
 class PortfolioProposal(BaseModel):
