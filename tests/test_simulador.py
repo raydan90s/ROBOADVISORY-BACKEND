@@ -12,8 +12,15 @@ Dos cosas que sostienen la pantalla y que no se pueden romper sin darse cuenta:
 No hace falta base de datos: las filas son un dato de entrada.
 """
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+
+from src.controllers import agent_controller
 from src.controllers.catalog_controller import elegir_recomendado
-from src.models.catalog import TasaInstrumento
+from src.models.agent import SimuladorRequest
+from src.models.auth import CurrentUser, Rol
+from src.models.catalog import CatalogoTasas, TasaInstrumento
+from src.services import simulator_ai
 from src.services.guardrails import validar
 from src.services.simulator_ai import (
     Simulacion,
@@ -21,6 +28,12 @@ from src.services.simulator_ai import (
     fuentes_citadas,
     recomendacion_determinista,
 )
+
+
+@contextmanager
+def _sin_base_de_datos() -> Iterator[None]:
+    """Reemplaza a `get_connection`: estos tests no tocan Postgres."""
+    yield None
 
 
 def _tasa(
@@ -180,3 +193,52 @@ def test_los_chips_citan_solo_lo_que_el_texto_nombro() -> None:
         sim, "Te recomiendo Depósito a Plazo Fijo 720 días de Produbanco, al 9,4%."
     )
     assert [c["record_id"] for c in chips] == ["EMPATE_AAA"]
+
+
+# ===========================================================================
+# 4. La IA solo ve lo que el usuario ve
+# ===========================================================================
+
+
+async def test_el_comparador_le_oculta_a_la_ia_los_plazos_que_filtro(monkeypatch) -> None:
+    """`todos_los_plazos` viaja en el body y el controlador lo REENVÍA, no lo fija.
+
+    El simulador muestra todo el catálogo (el plazo es su horizonte) pero el comparador
+    filtra por plazo: si acá se volviera a hardcodear `True`, la IA recomendaría un
+    depósito a 720 días mientras la lista en pantalla solo tiene los de 360. El texto
+    seguiría sin inventar ni un número y aun así mentiría.
+    """
+    visto: dict[str, object] = {}
+
+    async def _listar_tasas(investor_id, monto, plazo_dias, todos_los_plazos=False):
+        visto["todos_los_plazos"] = todos_los_plazos
+        return CatalogoTasas(
+            perfil="moderado", monto=monto, plazo_dias=plazo_dias, tasas=list(CATALOGO)
+        )
+
+    async def _recomendar(sim, provider=None):
+        return simulator_ai.Recomendacion(
+            texto=recomendacion_determinista(sim),
+            modelo=simulator_ai.PLANTILLA,
+            guardrail_passed=True,
+        )
+
+    # El archivado en `llm_interactions` necesita Postgres y no es lo que se prueba acá.
+    monkeypatch.setattr(agent_controller, "get_connection", _sin_base_de_datos)
+    monkeypatch.setattr(agent_controller, "_ultima_sesion", lambda conn, investor_id: None)
+    monkeypatch.setattr(agent_controller, "_archivar_simulacion", lambda *a, **k: None)
+    monkeypatch.setattr(agent_controller.catalog_controller, "listar_tasas", _listar_tasas)
+    monkeypatch.setattr(agent_controller.simulator_ai, "recomendar", _recomendar)
+
+    usuario = CurrentUser(id="inv-1", full_name="Ana", role=Rol.INVESTOR)
+
+    await agent_controller.recomendar_simulacion(
+        SimuladorRequest(monto=10000, plazo_dias=360, todos_los_plazos=False), usuario
+    )
+    assert visto["todos_los_plazos"] is False
+
+    # Y el simulador, que sí quiere el catálogo entero, lo sigue recibiendo (es el default).
+    await agent_controller.recomendar_simulacion(
+        SimuladorRequest(monto=10000, plazo_dias=360), usuario
+    )
+    assert visto["todos_los_plazos"] is True
