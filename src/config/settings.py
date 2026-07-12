@@ -48,6 +48,11 @@ class Settings(BaseSettings):
     # ticker y el chat nunca se rompen por falta de configuración.
     ALPHA_VANTAGE_API_KEY: str = ""
 
+    # --- Feed de noticias (gnews.io: 100 requests/día gratis) ---
+    # Sin key, `feed_service.py` sirve las noticias de respaldo: el feed nunca se
+    # queda en blanco. Con la caché de 1h por tema, la cuota alcanza de sobra.
+    GNEWS_API_KEY: str = ""
+
     # --- WhatsApp (Twilio) ---
     # El webhook es público (Twilio no manda un JWT), así que lo que autentica el POST
     # es la FIRMA: Twilio firma cada request con el auth token y la manda en el header
