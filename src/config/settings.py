@@ -20,8 +20,8 @@ class Settings(BaseSettings):
     # `gemini-flash-latest` sí responde. Si cambias de clave, verifica el modelo con:
     #   curl ".../v1beta/models/<modelo>:generateContent?key=$GEMINI_API_KEY" -d '{...}'
     # Proveedor de IA activo. Se cambia el modelo del asistente SOLO con esta variable:
-    # "google" | "openai" | "anthropic". Cada uno lee su propia API key y su modelo de
-    # abajo. Si el proveedor elegido no tiene key, el agente cae a la explicación
+    # "google" | "openai" | "anthropic" | "deepseek". Cada uno lee su propia API key y su
+    # modelo de abajo. Si el proveedor elegido no tiene key, el agente cae a la explicación
     # determinista (la demo nunca se rompe). Ver src/services/llm_provider.py.
     AI_PROVIDER: str = "google"
     # Temperatura común a todos los proveedores. Baja: fidelidad a los datos, no creatividad.
@@ -43,10 +43,20 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: str = ""
     ANTHROPIC_MODEL: str = "claude-haiku-4-5"
 
+    # --- DeepSeek (opcional; API compatible con OpenAI, reutiliza langchain-openai) ---
+    # `deepseek-chat` es V3 (redacción); `deepseek-reasoner` es R1 (razona más, más lento).
+    DEEPSEEK_API_KEY: str = ""
+    DEEPSEEK_MODEL: str = "deepseek-chat"
+
     # --- Mercados externos (ticker + agente Rutas B/C) ---
     # Sin key, `market_data.py` sirve directamente las cotizaciones simuladas: el
     # ticker y el chat nunca se rompen por falta de configuración.
     ALPHA_VANTAGE_API_KEY: str = ""
+
+    # --- Feed de noticias (gnews.io: 100 requests/día gratis) ---
+    # Sin key, `feed_service.py` sirve las noticias de respaldo: el feed nunca se
+    # queda en blanco. Con la caché de 1h por tema, la cuota alcanza de sobra.
+    GNEWS_API_KEY: str = ""
 
     # --- WhatsApp (Twilio) ---
     # El webhook es público (Twilio no manda un JWT), así que lo que autentica el POST

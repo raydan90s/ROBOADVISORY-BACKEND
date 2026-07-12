@@ -247,3 +247,19 @@ def validar(texto: str, ctx: ContextoPermitido) -> Veredicto:
     ):
         motivos.extend(veredicto.motivos)
     return Veredicto(not motivos, motivos)
+
+
+def validar_noticias(texto: str, ctx: ContextoPermitido) -> Veredicto:
+    """Guardarraíl de la Ruta D (noticias). Es un contrato distinto al del banco: una
+    noticia CITA fuentes reales (con bancos, cifras y calificaciones del mundo real que no
+    están en nuestro catálogo), así que `validar_catalogo` y `validar_cantidades_en_letras`
+    no aplican — reportarían como "inventado" todo lo que la fuente sí dijo.
+
+    Lo que sí se mantiene: (1) ningún número fuera de los que aparecen en los titulares
+    reales (`ctx.numeros` se arma con los dígitos del feed), para que el modelo no invente
+    una cifra que ninguna noticia trae; y (2) el léxico prohibido — una nota de prensa no
+    convierte "rentabilidad garantizada" en algo permitido."""
+    motivos: list[str] = []
+    for veredicto in (validar_numeros(texto, ctx.numeros), validar_lexico(texto)):
+        motivos.extend(veredicto.motivos)
+    return Veredicto(not motivos, motivos)

@@ -30,6 +30,7 @@ from src.controllers.agent_controller import (
     _cargar_historial,
     _contexto_agente,
     _guardar_turno,
+    _ultima_ruta,
 )
 from src.models.auth import CurrentUser
 from src.models.whatsapp import LinkCodeResponse, WhatsAppStatus
@@ -306,9 +307,14 @@ async def _responder_agente(link: dict[str, Any], mensaje: str, telefono: str) -
             return SIN_PERFILAMIENTO
 
         historial = _cargar_historial(conn, hilo)
+        ruta_previa = _ultima_ruta(conn, hilo)
 
     estado_final = await responder(
-        contexto, mensaje, historial, provider=settings.WHATSAPP_AI_PROVIDER or None
+        contexto,
+        mensaje,
+        historial,
+        provider=settings.WHATSAPP_AI_PROVIDER or None,
+        ruta_previa=ruta_previa,
     )
 
     with get_connection() as conn:
