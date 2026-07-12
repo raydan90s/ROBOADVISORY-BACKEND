@@ -22,6 +22,25 @@ services:
         sync: false
       - key: GEMINI_MODEL
         value: gemini-flash-latest
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_MODEL
+        value: gpt-4o-mini
+      # --- WhatsApp (Twilio) ---
+      # El auth token firma cada webhook: es lo único que distingue a Twilio de
+      # cualquiera que haga POST a la URL. Nunca en el repo.
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      # Tiene que coincidir CARÁCTER POR CARÁCTER con la URL configurada en la consola
+      # de Twilio: la firma se calcula sobre esta cadena.
+      - key: TWILIO_WEBHOOK_URL
+        value: 
+      - key: TWILIO_VALIDAR_FIRMA
+        value: "true"
+      # El bot corre siempre sobre OpenAI (es donde hay cuota), aunque el front siga
+      # ofreciendo el selector de modelos.
+      - key: WHATSAPP_AI_PROVIDER
+        value: openai
       - key: APP_ENV
         value: production
       - key: CORS_ORIGINS

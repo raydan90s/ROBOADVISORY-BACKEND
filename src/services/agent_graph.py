@@ -50,9 +50,10 @@ DISCLAIMER_CHAT = "Es una propuesta referencial y la revisa un asesor autorizado
 # Texto fijo de rechazo (ARQUITECTURA-IA §6). No es prompt engineering esperanzado:
 # es un nodo del grafo, y por eso es un caso de prueba reproducible.
 TEXTO_RECHAZO = (
-    "Solo puedo ayudarte con TUS datos: explicarte cómo se calculó tu perfil o "
-    "qué instrumentos tiene tu propuesta. No puedo predecir mercados, recomendar "
-    "productos fuera de tu propuesta ni hacer otras tareas."
+    "Puedo ayudarte con TU cuenta (perfil, puntaje, propuesta, subcuentas) y con los "
+    "productos del catálogo del banco: cuál te conviene, qué tasa y qué plazo tiene. "
+    "Lo que no hago es predecir precios ni mercados, ejecutar órdenes de compra o "
+    "venta, ni tareas ajenas a la inversión."
 )
 
 
@@ -61,17 +62,27 @@ TEXTO_RECHAZO = (
 # ===========================================================================
 
 # Patrones claramente fuera de alcance. El objetivo NO es entender la pregunta, sino
-# atajar los casos que el reto pide rechazar: predicción de mercados, otros activos
-# fuera del catálogo bancario, órdenes de compra/venta y tareas ajenas (código, etc.).
-# Lo dudoso se deja pasar al qa_node, cuyo prompt también acota el alcance, y al
-# guardarraíl. Es una primera línea determinista, no la única.
+# atajar los tres casos que el reto pide rechazar SIEMPRE:
+#
+#   1. Predecir el futuro (un precio, un mercado). Es donde un LLM alucina con más
+#      aplomo y donde una cifra inventada hace más daño.
+#   2. Ejecutar órdenes. El robo-advisor propone; comprar y vender lo hace un humano.
+#   3. Tareas ajenas (traducir, programar, el clima).
+#
+# Lo que ya NO se ataja acá: preguntar por un activo que el banco no ofrece (cripto,
+# acciones) o pedir una recomendación de inversión. Eso ahora es alcance: el agente
+# recomienda ENTRE LOS PRODUCTOS REALES DEL CATÁLOGO y puede explicar un concepto de
+# mercado en términos cualitativos, sin cifras. Quien impide que invente un número o
+# un producto no es este regex: es `guardrails.validar`, que corre igual sobre cada
+# respuesta. Esto es una primera línea determinista, no la única.
 _FUERA_DE_ALCANCE = re.compile(
     r"""
     \b(?:
-        bitcoin | cripto\w* | ethereum | forex | nasdaq | s&p | acci[oó]n\w* |
-        va\s+a\s+(?:subir|bajar|caer|crecer|rendir) | subir[áa] | bajar[áa] |
+        va\s+a\s+(?:subir|bajar|caer|crecer|rendir|valer) | subir[áa] | bajar[áa] |
         predic\w* | pron[oó]stic\w* | proyecci[oó]n | qu[eé]\s+va\s+a\s+pasar |
+        cu[aá]nto\s+(?:valdr[áa]|estar[áa]) | precio\s+(?:futuro|de\s+ma[ñn]ana) |
         c[oó]mprame | v[eé]ndeme | ejecuta\w* | invierte\s+por\s+m[ií] |
+        (?:compra|vende)\s+(?:por\s+m[ií]|mis?\b) |
         trad[uú]ce\w* | traducci[oó]n | (?:escribe|dame|genera)\s+(?:un\s+)?c[oó]digo |
         program[ae]\w* | receta | chiste | poema |
         clima | noticias? | deporte\w* | f[uú]tbol | pel[ií]cula\w* | hor[oó]scopo
@@ -262,14 +273,26 @@ REGLA DE ORO (si rompes una, tu respuesta se descarta):
    luego cada ítem en SU PROPIA LÍNEA empezando con «• ». No uses markdown (**negritas**,
    #, tablas): solo texto con viñetas «• » y saltos de línea.
 3. Puedes ANALIZAR y COMPARAR los DATOS (por qué tu perfil no admite un banco, qué
-   subcuenta es más conservadora, el trade-off tasa/calificación), pero NO predigas
-   mercados, NO recomiendes comprar/vender productos nuevos y NO prometas rentabilidad
-   ("garantizado", "seguro", "sin riesgo", "vas a ganar" están prohibidos). Los retornos
-   son referenciales.
-4. Fuera de los DATOS (otros activos, predicciones, tareas ajenas como traducir o
-   programar): di en una frase que solo explicas y analizas su perfil, propuestas y catálogo.
-5. Cuenta con letras ("los dos productos"), nunca con dígitos.
-6. Cita cada producto por su nombre COMPLETO y EXACTO con banco (ej. «Depósito a Plazo
+   subcuenta es más conservadora, el trade-off tasa/calificación) y puedes RECOMENDAR
+   DÓNDE INVERTIR, pero SOLO entre los productos del catálogo marcados como ELEGIBLES
+   para su perfil. Al recomendar, di por qué: tasa, plazo, calificación del emisor y
+   encaje con su perfil. Nunca recomiendes un producto NO elegible: si te lo piden,
+   explica por qué su perfil no lo admite y ofrece la alternativa elegible más parecida.
+4. Puedes explicar conceptos de inversión en términos CUALITATIVOS y generales (qué es
+   renta fija vs. renta variable, por qué a más plazo suele pedirse más tasa, qué
+   significa diversificar, qué implica una calificación de riesgo). En esas
+   explicaciones NO escribas NINGUNA cifra: ni tasas de mercado, ni rendimientos
+   históricos, ni fechas, ni porcentajes que no estén en los DATOS. Concepto sí,
+   número no.
+5. Lo que NO haces, y lo dices en una frase sin rodeos: predecir precios o mercados
+   (cuánto valdrá algo, si algo va a subir), ejecutar órdenes de compra o venta, y
+   tareas ajenas a la inversión. Si te preguntan por un activo que el banco no ofrece
+   (cripto, acciones, forex): puedes decir en una frase qué es, aclarar que no está en
+   el catálogo, y llevar la conversación a lo que sí puede tomar.
+6. NUNCA prometas rentabilidad ni niegues el riesgo ("garantizado", "seguro", "sin
+   riesgo", "vas a ganar" están prohibidos). Los retornos son referenciales.
+7. Cuenta con letras ("los dos productos"), nunca con dígitos.
+8. Cita cada producto por su nombre COMPLETO y EXACTO con banco (ej. «Depósito a Plazo
    Fijo 360 días de Banco Loja» — NUNCA «el DPF» ni abreviado). No uses «Fondo» o
    «Depósito» sueltos como palabra genérica; si no nombras uno puntual, di «ese producto»."""
 
