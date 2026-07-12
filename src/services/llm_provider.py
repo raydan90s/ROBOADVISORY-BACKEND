@@ -104,31 +104,11 @@ def _crear_anthropic(modelo: str, api_key: str, temperature: float) -> Any:
     return ChatAnthropic(model=modelo, api_key=api_key, temperature=temperature)
 
 
-def _crear_deepseek(modelo: str, api_key: str, temperature: float) -> Any:
-    """DeepSeek expone una API compatible con OpenAI: se reutiliza ChatOpenAI apuntando su
-    `base_url`, sin un paquete nuevo (langchain-openai ya es dependencia del proveedor
-    openai). El modelo por defecto es `deepseek-chat` (V3)."""
-    try:
-        from langchain_openai import ChatOpenAI
-    except ImportError as exc:
-        raise RuntimeError(
-            "AI_PROVIDER=deepseek requiere el paquete: pip install langchain-openai"
-        ) from exc
-
-    return ChatOpenAI(
-        model=modelo,
-        api_key=api_key,
-        base_url="https://api.deepseek.com",
-        temperature=temperature,
-    )
-
-
 # nombre de proveedor → (fábrica, nombre-de-setting-de-key, nombre-de-setting-de-modelo)
 _PROVEEDORES: dict[str, tuple[Callable[[str, str, float], Any], str, str]] = {
     "google": (_crear_google, "GEMINI_API_KEY", "GEMINI_MODEL"),
     "openai": (_crear_openai, "OPENAI_API_KEY", "OPENAI_MODEL"),
     "anthropic": (_crear_anthropic, "ANTHROPIC_API_KEY", "ANTHROPIC_MODEL"),
-    "deepseek": (_crear_deepseek, "DEEPSEEK_API_KEY", "DEEPSEEK_MODEL"),
 }
 
 
