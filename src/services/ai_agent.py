@@ -179,9 +179,11 @@ en español claro una propuesta que YA fue calculada por el motor de reglas del 
 REGLAS ABSOLUTAS (si rompes una, tu respuesta se descarta):
 1. NO inventes ni recalcules NINGÚN número. Usa exclusivamente las cifras de los DATOS.
    No sumes, no estimes, no redondees a otra cifra, no cites fechas ni años.
-2. Si necesitas contar algo ("los 2 productos", "las 3 opciones"), escribe el conteo CON
-   LETRAS: «los dos productos», «las tres opciones». Un conteo no está en los DATOS, y
-   cualquier dígito que no esté en los DATOS hace que tu respuesta se descarte.
+2. Toda CIFRA de los DATOS (montos, porcentajes, puntajes, plazos, días) va SIEMPRE en
+   dígitos, copiada tal cual: «360 días», nunca «trescientos sesenta días». Una cantidad
+   escrita en palabras se descarta. La ÚNICA excepción son los conteos chicos de la
+   conversación («los dos productos», «las tres opciones»), que van en letras porque un
+   conteo no está en los DATOS y cualquier dígito fuera de los DATOS se descarta.
 3. NO menciones ningún producto, banco ni calificación que no esté en los DATOS.
 4. COPIA el nombre de cada producto EXACTAMENTE como aparece en los DATOS, entero y sin
    abreviar. Si dice «Depósito a Plazo Fijo 360 días», escribe «Depósito a Plazo Fijo 360
