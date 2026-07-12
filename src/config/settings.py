@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     # `gemini-flash-latest` sí responde. Si cambias de clave, verifica el modelo con:
     #   curl ".../v1beta/models/<modelo>:generateContent?key=$GEMINI_API_KEY" -d '{...}'
     # Proveedor de IA activo. Se cambia el modelo del asistente SOLO con esta variable:
-    # "google" | "openai" | "anthropic" | "deepseek". Cada uno lee su propia API key y su
+    # "google" | "openai" | "anthropic". Cada uno lee su propia API key y su
     # modelo de abajo. Si el proveedor elegido no tiene key, el agente cae a la explicación
     # determinista (la demo nunca se rompe). Ver src/services/llm_provider.py.
     AI_PROVIDER: str = "google"
@@ -42,11 +42,6 @@ class Settings(BaseSettings):
     # --- Anthropic (opcional; requiere `pip install langchain-anthropic`) ---
     ANTHROPIC_API_KEY: str = ""
     ANTHROPIC_MODEL: str = "claude-haiku-4-5"
-
-    # --- DeepSeek (opcional; API compatible con OpenAI, reutiliza langchain-openai) ---
-    # `deepseek-chat` es V3 (redacción); `deepseek-reasoner` es R1 (razona más, más lento).
-    DEEPSEEK_API_KEY: str = ""
-    DEEPSEEK_MODEL: str = "deepseek-chat"
 
     # --- Mercados externos (ticker + agente Rutas B/C) ---
     # Sin key, `market_data.py` sirve directamente las cotizaciones simuladas: el
