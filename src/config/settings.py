@@ -48,6 +48,25 @@ class Settings(BaseSettings):
     # ticker y el chat nunca se rompen por falta de configuración.
     ALPHA_VANTAGE_API_KEY: str = ""
 
+    # --- WhatsApp (Twilio) ---
+    # El webhook es público (Twilio no manda un JWT), así que lo que autentica el POST
+    # es la FIRMA: Twilio firma cada request con el auth token y la manda en el header
+    # X-Twilio-Signature. Sin validarla, cualquiera podría hacer POST al webhook
+    # haciéndose pasar por un teléfono ya vinculado y leer la cartera de otro.
+    TWILIO_AUTH_TOKEN: str = ""
+    # La URL EXACTA que Twilio tiene configurada como webhook — entra en la firma, así
+    # que si acá dice http y en Twilio https, toda firma se rechaza. Debe ser la misma
+    # cadena, carácter por carácter, que aparece en la consola de Twilio.
+    TWILIO_WEBHOOK_URL: str = ""
+    # Escape hatch SOLO para probar el webhook con curl/ngrok en local. En producción
+    # tiene que quedar en true: es la única puerta del bot.
+    TWILIO_VALIDAR_FIRMA: bool = True
+
+    # Proveedor de IA que atiende WhatsApp. Va aparte de AI_PROVIDER a propósito: el
+    # front puede seguir demostrando el selector de modelos mientras el bot corre
+    # siempre sobre el proveedor con cuota (OpenAI). Vacío = usa AI_PROVIDER.
+    WHATSAPP_AI_PROVIDER: str = "openai"
+
     # Auth: firma de los JWT. En producción es obligatorio ponerlo en el entorno
     # (Render); si se queda el default, los tokens de todos los despliegues serían
     # falsificables con una llave pública.

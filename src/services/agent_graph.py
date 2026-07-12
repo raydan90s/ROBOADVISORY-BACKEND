@@ -84,9 +84,10 @@ DISCLAIMER_SIMULACION = (
 # Texto fijo de rechazo (ARQUITECTURA-IA §6). No es prompt engineering esperanzado:
 # es un nodo del grafo, y por eso es un caso de prueba reproducible.
 TEXTO_RECHAZO = (
-    "Solo puedo ayudarte con TUS datos: explicarte cómo se calculó tu perfil o "
-    "qué instrumentos tiene tu propuesta. No puedo predecir mercados, recomendar "
-    "productos fuera de tu propuesta ni hacer otras tareas."
+    "Puedo ayudarte con TU cuenta (perfil, puntaje, propuesta, subcuentas) y con los "
+    "productos del catálogo del banco: cuál te conviene, qué tasa y qué plazo tiene. "
+    "Lo que no hago es predecir precios ni mercados, ejecutar órdenes de compra o "
+    "venta, ni tareas ajenas a la inversión."
 )
 
 
@@ -94,17 +95,26 @@ TEXTO_RECHAZO = (
 # Router: ¿bancario, mixto, 100% externo, o fuera de alcance?
 # ===========================================================================
 
-# Fuera de alcance en CUALQUIER ruta: predecir movimientos de mercado (dar una
-# cotización actual es Ruta C; predecir hacia dónde va es otra cosa, prohibida
-# igual que en el catálogo del banco), órdenes de compra/venta, y tareas ajenas.
-# Lo dudoso se deja pasar al nodo correspondiente, cuyo prompt también acota el
-# alcance, y al guardarraíl. Es una primera línea determinista, no la única.
+# Fuera de alcance en CUALQUIER ruta — los tres casos que el reto pide rechazar SIEMPRE:
+#
+#   1. Predecir el futuro (un precio, un mercado). Dar una cotización actual es Ruta C;
+#      predecir hacia dónde va es otra cosa, prohibida igual que en el catálogo del
+#      banco — es donde un LLM alucina con más aplomo y una cifra inventada hace más daño.
+#   2. Ejecutar órdenes. El robo-advisor propone; comprar y vender lo hace un humano.
+#   3. Tareas ajenas (traducir, programar, el clima).
+#
+# Lo que ya NO se ataja acá: preguntar por un activo que el banco no ofrece (cripto,
+# forex, acciones, índices) — eso ahora abre la Ruta B o C en vez de un rechazo. Lo
+# dudoso se deja pasar al nodo correspondiente, cuyo prompt también acota el alcance,
+# y al guardarraíl. Es una primera línea determinista, no la única.
 _FUERA_DE_ALCANCE = re.compile(
     r"""
     \b(?:
-        va\s+a\s+(?:subir|bajar|caer|crecer|rendir) | subir[áa] | bajar[áa] |
+        va\s+a\s+(?:subir|bajar|caer|crecer|rendir|valer) | subir[áa] | bajar[áa] |
         predic\w* | pron[oó]stic\w* | proyecci[oó]n | qu[eé]\s+va\s+a\s+pasar |
+        cu[aá]nto\s+(?:valdr[áa]|estar[áa]) | precio\s+(?:futuro|de\s+ma[ñn]ana) |
         c[oó]mprame | v[eé]ndeme | ejecuta\w* | invierte\s+por\s+m[ií] |
+        (?:compra|vende)\s+(?:por\s+m[ií]|mis?\b) |
         trad[uú]ce\w* | traducci[oó]n | (?:escribe|dame|genera)\s+(?:un\s+)?c[oó]digo |
         program[ae]\w* | receta | chiste | poema |
         clima | noticias? | deporte\w* | f[uú]tbol | pel[ií]cula\w* | hor[oó]scopo
@@ -160,6 +170,12 @@ def _clasificar_ruta(mensaje: str) -> str:
     if not _MERCADO_EXTERNO.search(mensaje):
         return RUTA_BANCARIO
     return RUTA_MIXTO if _MENCION_BANCO.search(mensaje) else RUTA_EXTERNO
+
+
+def _fuera_de_alcance(mensaje: str) -> bool:
+    """Compat: el chequeo de alcance como booleano, para quien solo necesita eso
+    (`whatsapp_controller.py`/`test_whatsapp.py`) sin pasar por las 3 rutas."""
+    return _clasificar_ruta(mensaje) == RUTA_RECHAZO
 
 
 def _simbolos_de(mensaje: str) -> list[str]:
@@ -409,14 +425,26 @@ REGLA DE ORO (si rompes una, tu respuesta se descarta):
    luego cada ítem en SU PROPIA LÍNEA empezando con «• ». No uses markdown (**negritas**,
    #, tablas): solo texto con viñetas «• » y saltos de línea.
 3. Puedes ANALIZAR y COMPARAR los DATOS (por qué tu perfil no admite un banco, qué
-   subcuenta es más conservadora, el trade-off tasa/calificación), pero NO predigas
-   mercados, NO recomiendes comprar/vender productos nuevos y NO prometas rentabilidad
-   ("garantizado", "seguro", "sin riesgo", "vas a ganar" están prohibidos). Los retornos
-   son referenciales.
-4. Fuera de los DATOS (otros activos, predicciones, tareas ajenas como traducir o
-   programar): di en una frase que solo explicas y analizas su perfil, propuestas y catálogo.
-5. Cuenta con letras ("los dos productos"), nunca con dígitos.
-6. Cita cada producto por su nombre COMPLETO y EXACTO con banco (ej. «Depósito a Plazo
+   subcuenta es más conservadora, el trade-off tasa/calificación) y puedes RECOMENDAR
+   DÓNDE INVERTIR, pero SOLO entre los productos del catálogo marcados como ELEGIBLES
+   para su perfil. Al recomendar, di por qué: tasa, plazo, calificación del emisor y
+   encaje con su perfil. Nunca recomiendes un producto NO elegible: si te lo piden,
+   explica por qué su perfil no lo admite y ofrece la alternativa elegible más parecida.
+4. Puedes explicar conceptos de inversión en términos CUALITATIVOS y generales (qué es
+   renta fija vs. renta variable, por qué a más plazo suele pedirse más tasa, qué
+   significa diversificar, qué implica una calificación de riesgo). En esas
+   explicaciones NO escribas NINGUNA cifra: ni tasas de mercado, ni rendimientos
+   históricos, ni fechas, ni porcentajes que no estén en los DATOS. Concepto sí,
+   número no.
+5. Lo que NO haces, y lo dices en una frase sin rodeos: predecir precios o mercados
+   (cuánto valdrá algo, si algo va a subir), ejecutar órdenes de compra o venta, y
+   tareas ajenas a la inversión. Si te preguntan por un activo que el banco no ofrece
+   (cripto, acciones, forex): puedes decir en una frase qué es, aclarar que no está en
+   el catálogo, y llevar la conversación a lo que sí puede tomar.
+6. NUNCA prometas rentabilidad ni niegues el riesgo ("garantizado", "seguro", "sin
+   riesgo", "vas a ganar" están prohibidos). Los retornos son referenciales.
+7. Cuenta con letras ("los dos productos"), nunca con dígitos.
+8. Cita cada producto por su nombre COMPLETO y EXACTO con banco (ej. «Depósito a Plazo
    Fijo 360 días de Banco Loja» — NUNCA «el DPF» ni abreviado). No uses «Fondo» o
    «Depósito» sueltos como palabra genérica; si no nombras uno puntual, di «ese producto»."""
 

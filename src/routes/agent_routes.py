@@ -10,7 +10,13 @@ from fastapi import APIRouter, Depends
 
 from src.controllers import agent_controller
 from src.dependencies.auth import get_current_user
-from src.models.agent import AgentChatRequest, AgentChatResponse, ProviderInfo
+from src.models.agent import (
+    AgentChatRequest,
+    AgentChatResponse,
+    ProviderInfo,
+    SimuladorRequest,
+    SimuladorResponse,
+)
 from src.models.auth import CurrentUser
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
@@ -37,3 +43,17 @@ async def chat(
     usuario: CurrentUser = Depends(get_current_user),
 ) -> AgentChatResponse:
     return await agent_controller.chat(payload, usuario)
+
+
+@router.post(
+    "/simulador",
+    response_model=SimuladorResponse,
+    summary="Recomendación de IA sobre la simulación en pantalla (el motor elige, la IA explica)",
+)
+async def simulador(
+    payload: SimuladorRequest,
+    usuario: CurrentUser = Depends(get_current_user),
+) -> SimuladorResponse:
+    # No hace falta tener una propuesta ni un perfilamiento: se puede simular antes. Sin
+    # perfil, el catálogo viene sin regla de elegibilidad y la IA lo dice tal cual.
+    return await agent_controller.recomendar_simulacion(payload, usuario)

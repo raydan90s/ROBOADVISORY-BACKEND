@@ -63,7 +63,10 @@ join public.institutions inst on inst.id = i.institution_id
 where i.is_active
   and inst.is_active
   and i.expected_return is not null
-  and (%(plazo)s::int is null or i.term_days = %(plazo)s::int or i.term_days is null)
+  and (%(todos)s::bool
+       or %(plazo)s::int is null
+       or i.term_days = %(plazo)s::int
+       or i.term_days is null)
 order by inst.rating_tier asc, i.expected_return desc
 """
 
@@ -72,7 +75,18 @@ async def listar_tasas(
     investor_id: str,
     monto: float | None,
     plazo_dias: int | None,
+    todos_los_plazos: bool = False,
 ) -> CatalogoTasas:
+    """Las tasas del catálogo, con la elegibilidad del perfil de quien consulta.
+
+    `plazo_dias` hace dos cosas distintas y conviene no confundirlas: **filtra** los
+    depósitos a ese plazo (lo que quiere el comparador) y, a la vez, es el **horizonte**
+    con el que se estima el interés de los productos sin plazo fijo (los fondos).
+
+    `todos_los_plazos` apaga solo el filtro: el simulador quiere ver TODAS las opciones
+    del catálogo para poder cambiar de banco o de fondo, y que el plazo elegido siga
+    sirviendo de horizonte para los fondos. Cada depósito se estima con SU propio plazo.
+    """
     perfil = fetch_one(_SQL_PERFIL, {"investor_id": investor_id})
 
     filas = fetch_all(
@@ -82,12 +96,47 @@ async def listar_tasas(
             "rationale": perfil["rationale"] if perfil else None,
             "monto": monto,
             "plazo": plazo_dias,
+            "todos": todos_los_plazos,
         },
     )
+
+    tasas = [TasaInstrumento(**fila) for fila in filas]
+    recomendado = elegir_recomendado(tasas)
+    if recomendado is not None:
+        recomendado.recomendado = True
 
     return CatalogoTasas(
         perfil=perfil["perfil_code"] if perfil else None,
         monto=monto,
         plazo_dias=plazo_dias,
-        tasas=[TasaInstrumento(**fila) for fila in filas],
+        tasas=tasas,
     )
+
+
+def _viable(t: TasaInstrumento) -> bool:
+    """Elegible para el perfil (o sin perfil todavía) y con el monto mínimo cubierto."""
+    return (
+        t.elegible is not False
+        and t.cumple_monto_minimo is not False
+        and t.monto_final is not None
+    )
+
+
+def elegir_recomendado(tasas: list[TasaInstrumento]) -> TasaInstrumento | None:
+    """La opción que el motor recomienda. **Decide Python sobre las filas, nunca el LLM.**
+
+    El criterio es explícito y auditable: entre lo que el perfil SÍ admite y cuyo mínimo
+    el monto alcanza, la mayor tasa anual; a igual tasa, la institución mejor calificada.
+
+    La tasa anual —y no el monto final— es lo comparable: un depósito a 720 días paga más
+    intereses que uno a 180 solo por durar el doble, así que elegir por monto final sería
+    recomendar siempre el plazo más largo disfrazándolo de "mejor producto". El riesgo ya
+    quedó acotado antes, por la regla de elegibilidad del perfil.
+
+    Sin `?monto=` no hay `monto_final` y no se recomienda nada: el comparador muestra el
+    catálogo, no un consejo.
+    """
+    viables = [t for t in tasas if _viable(t)]
+    if not viables:
+        return None
+    return max(viables, key=lambda t: (t.tasa_anual, -t.rating_tier))

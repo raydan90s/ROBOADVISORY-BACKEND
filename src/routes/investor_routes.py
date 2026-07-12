@@ -12,6 +12,7 @@ from src.controllers import investor_controller
 from src.dependencies.auth import exige_dueno_o_asesor, get_current_user, require_role
 from src.models.auth import CurrentUser, Rol
 from src.models.investor import (
+    AsignacionUpdate,
     CapitalUpdate,
     Investor,
     InvestorProfileCreate,
@@ -58,6 +59,21 @@ async def set_capital(
 ) -> ResumenCapital:
     # El techo es del usuario del token: nadie fija el capital de otro.
     return await investor_controller.fijar_capital(usuario.id, payload)
+
+
+@router.put(
+    "/proposals/{proposal_id}/allocation",
+    response_model=PortfolioProposal,
+    summary="El inversionista arma su mezcla: agrega, quita o repondera fondos elegibles",
+)
+async def edit_allocation(
+    proposal_id: str,
+    payload: AsignacionUpdate,
+    usuario: CurrentUser = Depends(require_role(Rol.INVESTOR)),
+) -> PortfolioProposal:
+    # Solo el dueño, solo pending_review, solo productos elegibles para su perfil.
+    # La propuesta editada sigue esperando la revisión del asesor (HU3 intacta).
+    return await investor_controller.editar_asignacion(proposal_id, payload, usuario)
 
 
 @router.get(

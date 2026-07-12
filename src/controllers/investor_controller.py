@@ -7,6 +7,7 @@ El LLM solo redacta la explicación en lenguaje natural.
 
 from decimal import Decimal
 from typing import Any
+from uuid import UUID
 
 from fastapi import HTTPException, status
 from psycopg import Connection
@@ -16,6 +17,7 @@ from psycopg.types.json import Jsonb
 from src.config.database import fetch_all, fetch_one, get_connection
 from src.models.auth import CurrentUser
 from src.models.investor import (
+    AsignacionUpdate,
     AssetAllocation,
     BreakdownRespuesta,
     CapitalUpdate,
@@ -826,3 +828,167 @@ async def get_portfolio_proposal(
             retorno_esperado_anual=retorno,
             explicacion=explicacion.texto,
         )
+
+
+# ===========================================================================
+# Edición de la asignación por el inversionista
+# ===========================================================================
+
+
+async def editar_asignacion(
+    proposal_id: str, payload: AsignacionUpdate, usuario: CurrentUser
+) -> PortfolioProposal:
+    """El cliente arma su propia mezcla de fondos, dentro de las reglas.
+
+    Tres candados que el asesor no necesita pero el cliente sí:
+
+    1. Solo SU propuesta (el id del token manda, no el de la URL).
+    2. Solo mientras está `pending_review`: una decisión del asesor no se pisa —
+       si quiere cambiar una aprobada, se perfila de nuevo (misma regla que HU3).
+    3. Solo instrumentos **elegibles para su perfil**: la misma regla de calificación
+       (`rating_tier <= max_rating_tier`) que valida `v_institution_eligibility` y que
+       el comparador pinta en gris. El asesor puede saltársela a criterio; el cliente no.
+
+    Los USD los recalcula Postgres y la propuesta sigue esperando al asesor: editar
+    no aprueba nada.
+    """
+    try:
+        proposal_id = str(UUID(proposal_id))
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"'proposal_id' no es un identificador válido: {proposal_id}",
+        ) from exc
+
+    with get_connection() as conn:
+        # `for update` serializa contra el asesor decidiendo al mismo tiempo: si el
+        # asesor gana la carrera, aquí se lee el estado nuevo y se responde 409.
+        propuesta = conn.execute(
+            """
+            select p.id, p.status, p.total_amount,
+                   s.id as session_id, s.investor_id,
+                   s.rules_version_id, s.risk_profile_id
+            from public.proposals p
+            join public.profiling_sessions s on s.id = p.session_id
+            where p.id = %s
+            for update of p
+            """,
+            (proposal_id,),
+        ).fetchone()
+
+        if not propuesta:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"No existe la propuesta {proposal_id}.",
+            )
+
+        if str(propuesta["investor_id"]) != usuario.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Solo puedes editar tu propia propuesta.",
+            )
+
+        if propuesta["status"] != EstadoPropuesta.PENDIENTE_REVISION.value:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"La propuesta ya fue revisada (estado: {propuesta['status']}). "
+                    "Para cambiarla, crea una subcuenta nueva o perfílate de nuevo."
+                ),
+            )
+
+        codigos = [linea.instrumento_code for linea in payload.allocations]
+        filas = conn.execute(
+            """
+            select i.code, i.id,
+                   (inst.id is not null
+                    and inst.is_active
+                    and inst.rating_tier <= pir.max_rating_tier) as elegible,
+                   pir.rationale
+            from public.instruments i
+            left join public.institutions inst on inst.id = i.institution_id
+            join public.profile_institution_rules pir
+                 on pir.rules_version_id = %s and pir.risk_profile_id = %s
+            where i.code = any(%s) and i.is_active
+            """,
+            (propuesta["rules_version_id"], propuesta["risk_profile_id"], codigos),
+        ).fetchall()
+
+        por_codigo = {f["code"]: f for f in filas}
+
+        desconocidos = [c for c in codigos if c not in por_codigo]
+        if desconocidos:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    "Estos códigos no están en el catálogo de instrumentos: "
+                    + ", ".join(desconocidos)
+                ),
+            )
+
+        no_elegibles = [c for c in codigos if not por_codigo[c]["elegible"]]
+        if no_elegibles:
+            # El motivo es el rationale versionado de la regla, el mismo que muestra
+            # el comparador: la respuesta del servidor y la pantalla dicen lo mismo.
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    "Estos productos no están disponibles para tu perfil: "
+                    + ", ".join(no_elegibles)
+                    + ". "
+                    + (por_codigo[no_elegibles[0]]["rationale"] or "")
+                ),
+            )
+
+        conn.execute(
+            "delete from public.proposal_items where proposal_id = %s",
+            (propuesta["id"],),
+        )
+        for linea in payload.allocations:
+            # El USD lo calcula Postgres a partir del total guardado: es un número que
+            # después entra al set permitido del guardarraíl del agente.
+            conn.execute(
+                """
+                insert into public.proposal_items
+                    (proposal_id, instrument_id, percentage, amount)
+                select %s, %s, %s, round(p.total_amount * %s / 100.0, 2)
+                from public.proposals p
+                where p.id = %s
+                """,
+                (
+                    propuesta["id"],
+                    por_codigo[linea.instrumento_code]["id"],
+                    linea.porcentaje,
+                    linea.porcentaje,
+                    propuesta["id"],
+                ),
+            )
+
+        conn.execute(
+            """
+            insert into public.audit_log
+                (entity_type, entity_id, actor_id, action, platform, metadata)
+            values ('proposal', %s, %s, 'investor_edited', 'mobile', %s)
+            """,
+            (
+                propuesta["id"],
+                usuario.id,
+                Jsonb(
+                    {
+                        "allocations": [
+                            {
+                                "instrumento_code": linea.instrumento_code,
+                                "porcentaje": float(linea.porcentaje),
+                            }
+                            for linea in payload.allocations
+                        ]
+                    }
+                ),
+            ),
+        )
+
+        session_id = str(propuesta["session_id"])
+
+    # Fuera de la transacción (ya commiteada): la respuesta es la misma que da el GET,
+    # así el front pinta exactamente lo que quedó guardado.
+    return await get_portfolio_proposal(usuario.id, session_id)

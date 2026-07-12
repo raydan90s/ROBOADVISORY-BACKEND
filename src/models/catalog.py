@@ -35,6 +35,11 @@ class TasaInstrumento(BaseModel):
     interes_estimado: float | None
     monto_final: float | None
 
+    # La opción que el motor recomienda para este monto (ver `elegir_recomendado`). El
+    # front la destaca y la IA la explica: los tres miran la MISMA fila, y por eso no
+    # puede pasar que la tarjeta destaque una opción y el asistente recomiende otra.
+    recomendado: bool = False
+
 
 class CatalogoTasas(BaseModel):
     perfil: str | None
