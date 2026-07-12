@@ -14,6 +14,7 @@ import pytest
 from src.services.guardrails import (
     ContextoPermitido,
     validar,
+    validar_cantidades_en_letras,
     validar_catalogo,
     validar_lexico,
     validar_numeros,
@@ -77,6 +78,45 @@ def test_miles_y_decimales_no_se_confunden() -> None:
     assert validar_numeros("USD 12.000 en el DPF.", CTX.numeros).ok
     # 12.500 no está permitido aunque '12' sí lo esté (es el puntaje).
     assert not validar_numeros("USD 12.500 en el DPF.", CTX.numeros).ok
+
+
+# ---------------------------------------------------------------------------
+# Cantidades escritas en letras: el número que el validador no puede leer
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("texto", "trampa"),
+    [
+        (
+            "El plazo es de trescientos sesenta días.",
+            "360 en letras esquiva al validador numérico",
+        ),
+        (
+            "Rinde once coma cinco por ciento, unos mil cien dólares.",
+            "una tasa y un monto inventados, escritos en palabras",
+        ),
+        (
+            "Tu dinero queda comprometido por setecientos veinte días.",
+            "720 en letras — el caso visto en producción",
+        ),
+    ],
+)
+def test_cantidad_en_letras_es_rechazada(texto: str, trampa: str) -> None:
+    """En letras, una cifra no se puede comparar contra la base: se rechaza entera."""
+    assert not validar_cantidades_en_letras(texto).ok, f"Debió rechazar: {trampa}"
+
+
+def test_conteos_chicos_en_letras_si_pasan() -> None:
+    """«las dos opciones» es conversación, no un dato: el prompt lo pide así a propósito."""
+    assert validar_cantidades_en_letras(
+        "Las dos opciones tienen la misma calificación y ambas admiten tu monto."
+    ).ok
+
+
+def test_el_texto_bueno_sigue_pasando_con_el_cierre_nuevo() -> None:
+    """El cierre no puede romper el piso: el texto fiel a la base sigue siendo válido."""
+    assert validar(TEXTO_BUENO, CTX).ok
 
 
 # ---------------------------------------------------------------------------

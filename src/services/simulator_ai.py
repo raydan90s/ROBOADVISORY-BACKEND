@@ -255,17 +255,37 @@ REGLAS ABSOLUTAS (si rompes una, tu respuesta se descarta):
    "garantizado(s)", "asegurado", "seguro", "sin riesgo" y "vas a ganar" están prohibidas
    en cualquier contexto, incluso dentro de una frase que diga que NO hay garantía. Los
    retornos son referenciales; dilo con otras palabras.
-6. Si necesitas contar algo, escríbelo CON LETRAS («las dos opciones»). Cualquier dígito
-   que no esté en los DATOS hace que tu respuesta se descarte.
+6. Toda CIFRA de los DATOS (montos, tasas, plazos, días, porcentajes) va SIEMPRE en
+   dígitos, copiada tal cual: «360 días», nunca «trescientos sesenta días». Una cantidad
+   escrita en palabras se descarta. La ÚNICA excepción son los conteos chicos de la
+   conversación («las dos opciones», «ambos productos»), que van en letras porque no son
+   datos.
 7. Montos en formato ecuatoriano: USD 12.000 (el punto separa miles).
-8. Máximo 90 palabras, tono cercano, tuteando. Sin markdown ni tablas. Si comparas dos
-   opciones puedes usar hasta tres viñetas que empiecen con «• »; si no, un solo párrafo.
-9. Explica el PORQUÉ (tasa frente a calificación del emisor, plazo, monto mínimo), no
-   repitas la tarjeta: el usuario ya ve los números en pantalla."""
+8. FORMATO OBLIGATORIO — se lee en un teléfono, MÁXIMO 85 PALABRAS en total:
+   Primera frase: «Te conviene [producto] ([banco]):» y LA razón más fuerte CON sus
+   cifras (su tasa y su interés estimado o monto final).
+   Luego, SOLO si el usuario tiene seleccionada una opción distinta a la recomendada,
+   la línea «Si eliges [producto seleccionado] ([banco]):» seguida de exactamente dos
+   viñetas de UNA línea que hablan de ESA opción seleccionada (nunca de la recomendada):
+   • Ganas: …
+   • Cedes: …
+   Sin esa línea de contexto las viñetas se leen como si fueran de la recomendada y
+   confunden. NADA más: sin introducción, sin párrafo de cierre, sin resumen final.
+9. CONCRETO, no vago: cada afirmación lleva su cifra de los DATOS pegada («USD 1.597,81
+   frente a USD 1.134,25», no «un interés mayor»). Cada cifra aparece UNA sola vez, en
+   la línea que la necesita. Vago se rechaza igual que inventado.
+10. Si comparas un depósito con un fondo, la diferencia de naturaleza de la tasa (la del
+    depósito queda pactada al contratar; la del fondo es referencial y puede variar) va
+    DENTRO de las viñetas, en pocas palabras. Es el trade-off más importante."""
 
 
 def _linea(t: TasaInstrumento) -> str:
-    partes = [f"tasa {_pct(t.tasa_anual)}"]
+    # La naturaleza de la tasa es parte del dato: pactada (depósito) vs referencial
+    # (fondo). Dársela al modelo es lo que le permite explicar ese trade-off sin inventar.
+    if t.product_type == "deposito_plazo":
+        partes = [f"tasa {_pct(t.tasa_anual)} pactada al contratar"]
+    else:
+        partes = [f"tasa {_pct(t.tasa_anual)} referencial, puede variar"]
     partes.append(
         f"plazo {t.plazo_dias} días" if t.plazo_dias is not None else "sin plazo fijo"
     )
@@ -369,12 +389,17 @@ async def recomendar(sim: Simulacion, provider: str | None = None) -> Recomendac
             log.warning("El proveedor de IA falló en el simulador (intento %s): %s", intento + 1, exc)
             return _determinista([f"El proveedor de IA no respondió: {exc}"], intento)
 
+        palabras = len(texto.split())
+
         # El disclaimer lo ponemos nosotros: no depende de que el modelo se acuerde.
         if "asesor autorizado" not in texto.lower():
             texto = f"{texto}\n\n{DISCLAIMER}"
 
         veredicto = validar(texto, ctx)
-        if veredicto.ok:
+        # El largo solo fuerza el reintento: un texto válido pero verboso en el segundo
+        # intento se acepta igual — mejor largo y fiel que caer a la plantilla por estilo.
+        muy_largo = palabras > 100 and intento == 0
+        if veredicto.ok and not muy_largo:
             return Recomendacion(
                 texto=texto,
                 modelo=modelo_activo(provider),
@@ -383,16 +408,23 @@ async def recomendar(sim: Simulacion, provider: str | None = None) -> Recomendac
                 sources=fuentes_citadas(sim, texto),
             )
 
-        ultimos_motivos = veredicto.motivos
+        motivos = list(veredicto.motivos)
+        if muy_largo:
+            motivos.append(
+                f"Respuesta demasiado larga ({palabras} palabras): el formato pide "
+                "máximo 85, para leerse en un teléfono."
+            )
+        ultimos_motivos = motivos
         log.warning(
-            "Guardarraíl rechazó la recomendación del simulador (intento %s): %s",
+            "Recomendación del simulador rechazada (intento %s): %s",
             intento + 1,
-            veredicto.motivos,
+            motivos,
         )
         correccion = (
             "Tu respuesta anterior fue RECHAZADA por el validador del banco:\n"
-            + "\n".join(f"- {m}" for m in veredicto.motivos)
-            + "\nReescríbela usando EXCLUSIVAMENTE los números, productos y bancos de los DATOS."
+            + "\n".join(f"- {m}" for m in motivos)
+            + "\nReescríbela respetando el FORMATO OBLIGATORIO (máximo 85 palabras) y "
+            "usando EXCLUSIVAMENTE los números, productos y bancos de los DATOS."
         )
 
     # Dos rechazos: al usuario no se le muestra nada que el modelo haya inventado.
