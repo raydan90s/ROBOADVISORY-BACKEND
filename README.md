@@ -185,20 +185,37 @@ El proveedor de IA (Gemini / OpenAI / Anthropic) se elige con `AI_PROVIDER` en e
 `.env`, o por request con el campo `provider` — `GET /api/agent/providers` expone
 el catálogo (sin exponer las keys) para el selector del front.
 
+**Forzar la Ruta C**: `AgentChatRequest.symbols` es la señal explícita del botón
+"Recomendación de Mercados (IA)" del simulador de mercados del front — si viene,
+el router NO clasifica el mensaje: la ruta es C para esos símbolos exactos, sin
+depender de que el texto contenga las palabras que el clasificador reconoce.
+
 ### 5. Mercados externos (Alpha Vantage)
 
-`GET /api/market/quotes?symbols=BTCUSD,XAUUSD,...` (`services/market_data.py`) es
-el wrapper que alimenta el ticker del front y las Rutas B/C del agente:
+`services/market_data.py` es el wrapper que alimenta el ticker y el simulador de
+mercados del front, y las Rutas B/C del agente. Dos endpoints:
 
-- **Caché en memoria de 1 hora** (`cachetools.TTLCache`) — la cuota gratuita de
-  Alpha Vantage es de 25 requests/día; sin caché, el ticker (refrescando cada
-  ~45s) y cada turno de chat la agotarían en minutos.
+- **`GET /api/market/quotes?symbols=BTCUSD,XAUUSD,...`** — cotización en tiempo
+  real (`CURRENCY_EXCHANGE_RATE` para forex/cripto/metales, `GLOBAL_QUOTE` para
+  acciones/ETFs).
+- **`GET /api/market/history?symbol=&days=`** — serie diaria para gráficos
+  (`DIGITAL_CURRENCY_DAILY` para cripto, `FX_DAILY` para forex/metales,
+  `TIME_SERIES_DAILY` para acciones), 5 a 100 días.
+
+Ambos comparten las mismas dos reglas:
+
+- **Caché en memoria de 1 hora** (`cachetools.TTLCache`, una caché separada por
+  endpoint) — la cuota gratuita de Alpha Vantage es de 25 requests/día; sin caché,
+  el ticker (refrescando cada ~45s) y cada turno de chat la agotarían en minutos.
 - **Respaldo simulado**: si Alpha Vantage responde `Note`/`Information`/
   `Error Message` (rate limit o símbolo no soportado en el free tier — es el caso
-  conocido de `JPN225`) o la llamada falla, se sirve una cotización de referencia
-  fija. El ticker y el chat nunca se quedan en blanco ni muestran un error crudo.
-- Cubre los 5 símbolos del ticker (`BTCUSD`, `XAUUSD`, `JPN225`, `SPY`, `EURUSD`),
-  extensible agregando una entrada a `_SYMBOL_CONFIG`.
+  conocido de `JPN225`) o la llamada falla, se sirve un dato de referencia. Para
+  cotizaciones es un valor fijo; para el histórico, una caminata aleatoria
+  **determinista** (sembrada con el símbolo, no con el reloj: la misma curva en
+  cada request, para que la demo no cambie de forma entre una recarga y otra). El
+  ticker, el gráfico y el chat nunca se quedan en blanco ni muestran un error crudo.
+- Cubren los 5 símbolos del ticker (`BTCUSD`, `XAUUSD`, `JPN225`, `SPY`, `EURUSD`),
+  extensible agregando una entrada a `_SYMBOL_CONFIG` / `_HISTORY_CONFIG`.
 
 ### 6. Comparador de tasas
 
@@ -235,6 +252,7 @@ y con qué versión de reglas. Alimenta la pantalla de auditoría del asesor.
 | `GET` | `/api/agent/providers` | autenticado | Proveedores de IA disponibles |
 | `POST` | `/api/agent/chat` | autenticado | Un turno del asistente (3 rutas, ver arriba) |
 | `GET` | `/api/market/quotes` | autenticado | Cotizaciones externas cacheadas |
+| `GET` | `/api/market/history` | autenticado | Serie diaria de un símbolo (para gráficos), cacheada |
 | `GET` | `/api/catalog/rates` | autenticado | Comparador de tasas con elegibilidad |
 | `GET` | `/api/audit` | advisor | Timeline de auditoría |
 | `GET` | `/health` | público | Healthcheck (consulta real a la base) |
