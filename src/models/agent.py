@@ -55,3 +55,31 @@ class AgentChatResponse(BaseModel):
     # el rechazo por fuera de alcance. Útil para la demo y la auditoría.
     modelo: str
     en_alcance: bool = True
+
+
+class SimuladorRequest(BaseModel):
+    """Body del POST /api/agent/simulador: la simulación que el usuario está viendo."""
+
+    monto: float = Field(..., gt=0)
+
+    # El horizonte de la simulación. Filtra nada: estima los productos sin plazo fijo
+    # (los fondos). Los depósitos se estiman siempre con SU propio plazo.
+    plazo_dias: int | None = Field(None, gt=0)
+
+    # El producto que el usuario eligió al cambiar de banco o de fondo. None = está
+    # mirando la que el motor recomienda.
+    seleccion_code: str | None = None
+
+    provider: str | None = None
+
+
+class SimuladorResponse(BaseModel):
+    """La recomendación del simulador. El motor eligió; la IA solo lo explica."""
+
+    # El `instruments.code` que eligió el MOTOR (no el modelo). El front lo destaca.
+    recomendado_code: str | None
+
+    texto: str
+    sources: list[SourceChip] = Field(default_factory=list)
+    guardrail_passed: bool
+    modelo: str
