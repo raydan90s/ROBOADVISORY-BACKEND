@@ -497,12 +497,18 @@ async def recomendar_simulacion(
 ) -> SimuladorResponse:
     """Recomendación de IA sobre la simulación que el usuario tiene en pantalla.
 
-    Las opciones se piden con el MISMO `listar_tasas` que sirve al simulador (y con
-    `todos_los_plazos`, porque el usuario puede haber cambiado de banco o de fondo): la
-    IA cita exactamente las cifras que él está viendo, no otras calculadas aparte.
+    Las opciones se piden con el MISMO `listar_tasas` que sirve a la pantalla: la IA cita
+    exactamente las cifras que el usuario está viendo, no otras calculadas aparte. Por eso
+    `todos_los_plazos` viaja en el body en vez de ir fijo — el simulador lo manda en
+    `true` (ahí el plazo es horizonte y el usuario puede cambiarse a un depósito de otro
+    plazo) y el comparador en `false` (ahí el plazo es un filtro y las filas de otros
+    plazos no están en pantalla).
     """
     catalogo = await catalog_controller.listar_tasas(
-        usuario.id, payload.monto, payload.plazo_dias, todos_los_plazos=True
+        usuario.id,
+        payload.monto,
+        payload.plazo_dias,
+        todos_los_plazos=payload.todos_los_plazos,
     )
 
     por_code = {t.code: t for t in catalogo.tasas}

@@ -74,13 +74,21 @@ class SimuladorRequest(BaseModel):
 
     monto: float = Field(..., gt=0)
 
-    # El horizonte de la simulación. Filtra nada: estima los productos sin plazo fijo
-    # (los fondos). Los depósitos se estiman siempre con SU propio plazo.
+    # Qué significa `plazo_dias` lo decide `todos_los_plazos` (abajo): en el simulador es
+    # el horizonte con el que se estiman los productos sin plazo fijo (los fondos), y los
+    # depósitos rinden siempre a SU propio plazo. En el comparador es un filtro.
     plazo_dias: int | None = Field(None, gt=0)
 
     # El producto que el usuario eligió al cambiar de banco o de fondo. None = está
     # mirando la que el motor recomienda.
     seleccion_code: str | None = None
+
+    # La IA solo tiene derecho a hablar de las filas que el usuario TIENE EN PANTALLA.
+    # El simulador las muestra todas (por eso el default), pero el comparador filtra por
+    # plazo y manda `false`: si no, el texto recomendaría un depósito a 720 días mientras
+    # la lista visible solo tiene los de 360. Citar la base sin mentir no basta: hay que
+    # citar lo que el usuario está viendo.
+    todos_los_plazos: bool = True
 
     provider: str | None = None
 
