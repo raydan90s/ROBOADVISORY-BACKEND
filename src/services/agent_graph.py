@@ -137,6 +137,11 @@ class ContextoAgente:
     # Todas las calificaciones que existen en `institutions` (AAA, AAA-, AA+, AA…). El
     # agente las nombra al explicar la regla de elegibilidad; son reales, no inventadas.
     calificaciones_validas: list[str]
+    # Capital del inversionista (subcuentas): techo declarado, lo ya repartido y lo que
+    # queda libre. None si no declaró un capital total. Todo sale de Postgres.
+    capital_total: float | None
+    asignado: float | None
+    sin_asignar: float | None
 
 
 def contexto_permitido_agente(ctx: ContextoAgente) -> ContextoPermitido:
@@ -172,6 +177,10 @@ def contexto_permitido_agente(ctx: ContextoAgente) -> ContextoPermitido:
     # Las calificaciones reales del sistema: el agente las cita al explicar la regla
     # ("tu perfil admite hasta AA"), y son legítimas aunque no estén en su cartera.
     calificaciones.update(ctx.calificaciones_validas)
+
+    for monto in (ctx.capital_total, ctx.asignado, ctx.sin_asignar):
+        if monto is not None:
+            numeros.add(Decimal(str(monto)))
 
     if ctx.max_rating_tier is not None:
         numeros.add(Decimal(ctx.max_rating_tier))
@@ -310,6 +319,15 @@ def _bloque_datos(ctx: ContextoAgente) -> str:
         )
         subcuentas = f"\n\nTus subcuentas (sesiones de inversión, para comparar):\n{lineas}"
 
+    capital = ""
+    if ctx.capital_total is not None:
+        detalle = f"capital total {_usd(ctx.capital_total)}"
+        if ctx.asignado is not None:
+            detalle += f", asignado {_usd(ctx.asignado)}"
+        if ctx.sin_asignar is not None:
+            detalle += f", sin asignar {_usd(ctx.sin_asignar)}"
+        capital = f"\n\nTu capital (para tus subcuentas): {detalle}."
+
     return f"""DATOS DEL INVERSIONISTA (son los ÚNICOS números y nombres que puedes usar):
 Cliente: {inv.nombre}
 Monto de esta subcuenta: {monto}
@@ -318,7 +336,7 @@ Rango del perfil: {d.umbral_min} a {d.umbral_max} puntos (reglas {d.rules_versio
 Riesgo de la cartera: {d.riesgo.value}
 Respuestas del cuestionario: {respuestas}
 Cartera asignada por el motor de reglas:
-{productos}{elegibilidad}{catalogo}{subcuentas}"""
+{productos}{elegibilidad}{catalogo}{subcuentas}{capital}"""
 
 
 def build_system_prompt(ctx: ContextoAgente) -> str:

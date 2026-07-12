@@ -259,17 +259,37 @@ def _calificaciones_validas(conn: Connection) -> list[str]:
     return [f["credit_rating"] for f in filas]
 
 
+def _capital(
+    conn: Connection, investor_id: str, subcuentas: list[Subcuenta]
+) -> tuple[float | None, float | None, float | None]:
+    """Techo de capital del inversionista, lo repartido y lo libre (misma lógica que
+    `listar_subcuentas`). None si no declaró un capital total."""
+    fila = conn.execute(
+        "select total_capital::float as capital from public.profiles where id = %s",
+        (investor_id,),
+    ).fetchone()
+    capital = fila["capital"] if fila else None
+    asignado = round(sum(s.monto for s in subcuentas if s.monto is not None), 2)
+    sin_asignar = round(capital - asignado, 2) if capital is not None else None
+    return capital, asignado, sin_asignar
+
+
 def _contexto_agente(conn: Connection, session_id: str) -> tuple[ContextoAgente, str]:
     """Reúne TODO lo que el agente conoce del inversionista para analizar, no solo describir."""
     datos, proposal_id = _datos_de_sesion(conn, session_id)
     max_tier, regla = _elegibilidad(conn, session_id)
+    subcuentas = _subcuentas(conn, datos.investor.investor_id, session_id)
+    capital_total, asignado, sin_asignar = _capital(conn, datos.investor.investor_id, subcuentas)
     contexto = ContextoAgente(
         datos=datos,
         max_rating_tier=max_tier,
         regla_elegibilidad=regla,
         catalogo=_catalogo(conn, max_tier),
-        subcuentas=_subcuentas(conn, datos.investor.investor_id, session_id),
+        subcuentas=subcuentas,
         calificaciones_validas=_calificaciones_validas(conn),
+        capital_total=capital_total,
+        asignado=asignado,
+        sin_asignar=sin_asignar,
     )
     return contexto, proposal_id
 
