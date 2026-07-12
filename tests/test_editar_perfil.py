@@ -11,11 +11,11 @@ activas, regenera la propuesta con la plantilla del perfil nuevo y la devuelve a
 4. solo el dueño de la sesión puede hacerlo (403 al intruso).
 """
 
-import uuid
 from collections.abc import Iterator
 
 import pytest
 from fastapi.testclient import TestClient
+from tests.ayudas_auth import cabeceras_de, registrar_verificado
 
 from src.config.database import fetch_all, get_connection
 from src.main import app
@@ -111,13 +111,11 @@ def cuenta_desechable() -> Iterator[list[str]]:
 
 
 def _registrar(cuenta_desechable: list[str]) -> tuple[str, dict[str, str]]:
-    email = f"zz-perfil-{uuid.uuid4().hex[:8]}@test.local"
-    registro = CLIENTE.post(
-        "/api/auth/register",
-        json={"nombre": "ZZ Perfil", "email": email, "password": "demo1234"},
-    ).json()
+    # El registro ya no devuelve token: la cuenta nace con el correo sin verificar. El
+    # ayudante hace el paso que en la app hace el usuario — leer el código y canjearlo.
+    registro = registrar_verificado(CLIENTE, "perfil", "ZZ Perfil")
     cuenta_desechable.append(registro["user_id"])
-    return registro["user_id"], {"Authorization": f"Bearer {registro['access_token']}"}
+    return registro["user_id"], cabeceras_de(registro)
 
 
 @pytest.fixture

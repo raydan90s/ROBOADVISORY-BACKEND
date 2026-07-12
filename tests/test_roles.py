@@ -5,12 +5,14 @@ la cola del asesor y aprobar su propia propuesta. Se ejercita la app real (no un
 guardia) porque lo que se quiere probar es el cableado, no la función suelta.
 """
 
+import uuid
 from collections.abc import Iterator
 
 import pytest
 from fastapi.testclient import TestClient
+from tests.ayudas_auth import cabeceras_de, codigo_pendiente, registrar_verificado
 
-from src.config.database import get_connection
+from src.config.database import fetch_one, get_connection
 from src.main import app
 
 CLIENTE = TestClient(app)
@@ -80,21 +82,93 @@ def test_el_asesor_si_entra(token_advisor: str) -> None:
 
 
 def test_el_rol_no_es_negociable_desde_el_cliente(cuenta_desechable: list[str]) -> None:
-    """El self-signup crea investors. Pedir 'advisor' en el body no cambia nada."""
-    import uuid
+    """El self-signup crea investors. Pedir 'advisor' en el body no cambia nada.
 
+    El `role` ya no se puede leer en la respuesta del registro (que no trae token, porque
+    el correo todavía no está verificado): se lee en el token que sale de /verify-email,
+    que es donde de verdad importa — es el que firma el backend.
+    """
     email = f"zz-rol-{uuid.uuid4().hex[:8]}@test.local"
     r = CLIENTE.post(
         "/api/auth/register",
         json={"nombre": "ZZ Rol", "email": email, "password": "demo1234", "role": "advisor"},
     )
-    assert r.status_code == 201
+    assert r.status_code == 201, r.text
+    assert "access_token" not in r.json(), "El registro no puede dejar logueado a nadie"
+
+    r = CLIENTE.post(
+        "/api/auth/verify-email",
+        json={"email": email, "codigo": codigo_pendiente(email)},
+    )
+    assert r.status_code == 200, r.text
     assert r.json()["role"] == "investor"
     cuenta_desechable.append(r.json()["user_id"])
 
     token = r.json()["access_token"]
     r = CLIENTE.get("/api/advisor/queue", headers={"Authorization": f"Bearer {token}"})
     assert r.status_code == 403
+
+
+def test_sin_verificar_el_correo_no_se_entra(cuenta_desechable: list[str]) -> None:
+    """⭐ El gate: la contraseña correcta no alcanza si el correo nunca se probó.
+
+    Sin este test, `email_verified_at` sería una columna decorativa: el registro mandaría
+    un código que nadie estaría obligado a leer.
+    """
+    email = f"zz-noverif-{uuid.uuid4().hex[:8]}@test.local"
+    r = CLIENTE.post(
+        "/api/auth/register",
+        json={"nombre": "ZZ Sin Verificar", "email": email, "password": "demo1234"},
+    )
+    assert r.status_code == 201, r.text
+
+    # Credenciales correctas, correo sin verificar → 403, no token.
+    r = CLIENTE.post("/api/auth/login", json={"email": email, "password": "demo1234"})
+    assert r.status_code == 403, r.text
+    assert "access_token" not in r.json()
+
+    # Y con el código, sí entra.
+    r = CLIENTE.post(
+        "/api/auth/verify-email",
+        json={"email": email, "codigo": codigo_pendiente(email)},
+    )
+    assert r.status_code == 200, r.text
+    cuenta_desechable.append(r.json()["user_id"])
+
+    r = CLIENTE.post("/api/auth/login", json={"email": email, "password": "demo1234"})
+    assert r.status_code == 200, r.text
+
+
+def test_un_codigo_equivocado_no_verifica_nada(cuenta_desechable: list[str]) -> None:
+    """El código es un secreto, no un formulario: adivinarlo no abre la cuenta."""
+    email = f"zz-malcodigo-{uuid.uuid4().hex[:8]}@test.local"
+    CLIENTE.post(
+        "/api/auth/register",
+        json={"nombre": "ZZ Mal Código", "email": email, "password": "demo1234"},
+    )
+
+    real = codigo_pendiente(email)
+    falso = f"{(int(real) + 1) % 1_000_000:06d}"
+
+    r = CLIENTE.post("/api/auth/verify-email", json={"email": email, "codigo": falso})
+    assert r.status_code == 400, r.text
+
+    # El intento fallido quedó CONTADO (si el rollback se lo comiera, MAX_INTENTOS no
+    # frenaría a un script que prueba el millón de códigos).
+    fila = fetch_one(
+        """
+        select c.attempts
+          from public.auth_codes c join public.profiles p on p.id = c.profile_id
+         where p.email = %s and c.used_at is null
+        """,
+        (email,),
+    )
+    assert fila and fila["attempts"] == 1
+
+    # Y el bueno sigue sirviendo.
+    r = CLIENTE.post("/api/auth/verify-email", json={"email": email, "codigo": real})
+    assert r.status_code == 200, r.text
+    cuenta_desechable.append(r.json()["user_id"])
 
 
 RUTAS_DEL_CLIENTE = ["/breakdown", "/portfolio", ""]
@@ -147,15 +221,9 @@ def test_el_perfilamiento_se_adjunta_al_usuario_del_token(
     Antes se creaba un `profiles` nuevo en cada perfilamiento: el cliente terminaba con
     dos identidades y su propia propuesta le quedaba inaccesible. Este test lo impide.
     """
-    import uuid
-
-    email = f"zz-dueno-{uuid.uuid4().hex[:8]}@test.local"
-    registro = CLIENTE.post(
-        "/api/auth/register",
-        json={"nombre": "ZZ Dueño", "email": email, "password": "demo1234"},
-    ).json()
+    registro = registrar_verificado(CLIENTE, "dueno", "ZZ Dueño")
     cuenta_desechable.append(registro["user_id"])
-    cabeceras = {"Authorization": f"Bearer {registro['access_token']}"}
+    cabeceras = cabeceras_de(registro)
 
     perfil = CLIENTE.post(
         "/api/investor/profile",

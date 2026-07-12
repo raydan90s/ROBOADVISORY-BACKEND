@@ -12,6 +12,7 @@ from collections.abc import Iterator
 
 import pytest
 from fastapi.testclient import TestClient
+from tests.ayudas_auth import cabeceras_de, registrar_verificado
 
 from src.config.database import get_connection
 from src.main import app
@@ -41,16 +42,14 @@ def cuenta_desechable() -> Iterator[list[str]]:
 
 @pytest.fixture
 def cabeceras(cuenta_desechable: list[str]) -> dict[str, str]:
-    """Un inversionista nuevo, logueado, listo para declarar capital."""
-    import uuid
+    """Un inversionista nuevo, logueado, listo para declarar capital.
 
-    email = f"zz-subcuentas-{uuid.uuid4().hex[:8]}@test.local"
-    registro = CLIENTE.post(
-        "/api/auth/register",
-        json={"nombre": "ZZ Subcuentas", "email": email, "password": "demo1234"},
-    ).json()
+    Registrar ya no basta para tener token: hay que verificar el correo. `registrar_
+    verificado` lee el código de `auth_codes` — lo que el usuario haría en su bandeja.
+    """
+    registro = registrar_verificado(CLIENTE, "subcuentas", "ZZ Subcuentas")
     cuenta_desechable.append(registro["user_id"])
-    return {"Authorization": f"Bearer {registro['access_token']}"}
+    return cabeceras_de(registro)
 
 
 def _fijar_capital(monto: int, cabeceras: dict[str, str]):

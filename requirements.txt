@@ -12,6 +12,12 @@ psycopg_pool>=3.2.4
 bcrypt==4.2.1
 pyjwt==2.10.1
 python-multipart==0.0.20
+# Lo que hace que `EmailStr` valide de verdad: sin este paquete, Pydantic lanza
+# ImportError al importar los modelos de auth. Valida el formato y normaliza el dominio.
+email-validator==2.2.0
+
+# --- Correo saliente ---
+# No hay dependencia: `smtplib` (stdlib) habla SMTP con Gmail. Ver src/services/mailer.py.
 
 # --- Entorno ---
 python-dotenv==1.0.1
