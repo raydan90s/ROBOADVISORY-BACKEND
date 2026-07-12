@@ -12,6 +12,9 @@ lo que WhatsApp sí tiene de propio:
   2. **La degradación.** En la app un 404 es una pantalla de error; en WhatsApp tiene
      que ser una frase amable. Un usuario sin perfilamiento no puede quedarse mirando
      un mensaje que no llega.
+  3. **El render.** El agente devuelve texto MÁS `sources` (las citas). La app los pinta
+     como chips tocables; WhatsApp no tiene chips, solo texto — así que las citas de la
+     Ruta D (noticias) hay que bajarlas al cuerpo del mensaje o el usuario no ve ninguna.
 """
 
 from __future__ import annotations
@@ -34,7 +37,12 @@ from src.controllers.agent_controller import (
 )
 from src.models.auth import CurrentUser
 from src.models.whatsapp import LinkCodeResponse, WhatsAppStatus
-from src.services.agent_graph import responder
+from src.services.agent_graph import (
+    DISCLAIMER_NOTICIAS,
+    RUTA_NOTICIAS,
+    _MAX_NOTICIAS,
+    responder,
+)
 from src.services.whatsapp import enmascarar, normalizar_telefono
 
 log = logging.getLogger(__name__)
@@ -276,6 +284,34 @@ def _codigo_del_mensaje(texto: str) -> str | None:
 # ===========================================================================
 
 
+def _texto_para_whatsapp(estado: dict[str, Any]) -> str:
+    """El texto del agente, ya listo para un globo de WhatsApp.
+
+    La Ruta D (noticias) redacta a propósito UNA frase y deja los titulares en los
+    `sources` —la app los pinta como chips con link—, pero WhatsApp no tiene chips: solo
+    viaja texto. Sin este paso, preguntar por noticias devolvía una frase suelta y ningún
+    titular, que es exactamente "no me habla de eso". Acá los titulares vuelven al cuerpo,
+    con su link, que WhatsApp convierte en enlace tocable.
+
+    Las Rutas B y C no necesitan nada: sus cifras ya están en el texto.
+    """
+    texto = estado["texto"]
+    if estado.get("ruta") != RUTA_NOTICIAS:
+        return texto
+
+    feed = estado.get("feed")
+    if not feed or not feed.noticias:
+        return texto
+
+    titulares = "\n\n".join(
+        f"• {n.titulo}\n{n.url}" for n in feed.noticias[:_MAX_NOTICIAS]
+    )
+    # El disclaimer de la ruta va al final, después de los titulares: es el cierre del
+    # mensaje, no una línea perdida a mitad de camino.
+    cuerpo = texto.replace(DISCLAIMER_NOTICIAS, "").strip()
+    return f"{cuerpo}\n\n{titulares}\n\n{DISCLAIMER_NOTICIAS}"
+
+
 async def _responder_agente(link: dict[str, Any], mensaje: str, telefono: str) -> str:
     """Corre el MISMO agente del chat de la app sobre la cuenta dueña de este teléfono."""
     usuario = CurrentUser(
@@ -329,13 +365,13 @@ async def _responder_agente(link: dict[str, Any], mensaje: str, telefono: str) -
         )
 
     log.warning(
-        "[whatsapp] %s -> modelo=%s | guardrail=%s | en_alcance=%s",
+        "[whatsapp] %s -> modelo=%s | ruta=%s | guardrail=%s",
         enmascarar(telefono),
         estado_final["modelo"],
+        estado_final.get("ruta"),
         estado_final["guardrail_passed"],
-        estado_final.get("en_alcance"),
     )
-    return estado_final["texto"]
+    return _texto_para_whatsapp(estado_final)
 
 
 async def procesar_mensaje(desde: str, cuerpo: str) -> str:
