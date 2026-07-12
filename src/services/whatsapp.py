@@ -75,14 +75,51 @@ def enmascarar(telefono: str) -> str:
 
 
 # ===========================================================================
-# 3. La respuesta: TwiML
+# 3. El formato de salida: lo que WhatsApp sí sabe pintar
+# ===========================================================================
+
+# WhatsApp no renderiza markdown: un `**negrita**` se lee literalmente con los cuatro
+# asteriscos, y un `### título` se queda con los gattillos. El prompt le prohíbe markdown
+# al modelo, pero un LLM es una sugerencia con buena intención, no un contrato — así que
+# la garantía se impone acá, en la única puerta de salida del canal, donde vale igual
+# para el texto del modelo y para los textos fijos del bot.
+_REEMPLAZOS: list[tuple[re.Pattern[str], str]] = [
+    # Los guillemets se ven como ruido en un globo de chat. Comillas rectas, que además
+    # sobreviven a cualquier fuente y a cualquier copia/pega.
+    (re.compile(r"[«»]"), '"'),
+    # ### Encabezado → *Encabezado* (WhatsApp no tiene títulos; lo más cercano es negrita).
+    # El espacio se escribe [ \t], nunca \s: en modo MULTILINE, un \s* al final del patrón
+    # se traga el salto de línea siguiente y fusiona el título con el párrafo de abajo.
+    (re.compile(r"^[ \t]{0,3}#{1,6}[ \t]*(.+?)[ \t]*$", re.MULTILINE), r"*\1*"),
+    # **negrita** y __negrita__ → *negrita* (el asterisco simple ES la negrita de WhatsApp).
+    # Sin DOTALL: una negrita no cruza párrafos, y un `**` suelto no debe devorar el texto
+    # hasta el siguiente `**` tres líneas abajo.
+    (re.compile(r"\*\*(.+?)\*\*"), r"*\1*"),
+    (re.compile(r"__(.+?)__"), r"*\1*"),
+    # Viñetas de markdown ("- ", "* ") → "• ", la que el bot ya usa en sus textos fijos.
+    (re.compile(r"^[ \t]*[-*+][ \t]+", re.MULTILINE), "• "),
+    # Tres o más saltos seguidos: un globo con huecos se ve descuidado.
+    (re.compile(r"\n{3,}"), "\n\n"),
+]
+
+
+def formatear(texto: str) -> str:
+    """Normaliza el texto a lo que WhatsApp sabe pintar. Idempotente y sin estado."""
+    for patron, reemplazo in _REEMPLAZOS:
+        texto = patron.sub(reemplazo, texto)
+    # Espacios al final de línea: invisibles, pero desalinean las viñetas al renderizar.
+    return "\n".join(linea.rstrip() for linea in texto.splitlines()).strip()
+
+
+# ===========================================================================
+# 4. La respuesta: TwiML
 # ===========================================================================
 
 
 def _partir(texto: str, limite: int = LIMITE_MENSAJE) -> list[str]:
     """Parte el texto en globos, cortando en saltos de línea antes que a media palabra.
 
-    El agente responde listas con viñetas «• » (así lo pide su prompt). Cortar a ciegas
+    El agente responde listas con viñetas "• " (así lo pide su prompt). Cortar a ciegas
     cada 1500 caracteres partiría una viñeta en dos mensajes y el usuario leería medio
     producto y medio monto — exactamente el tipo de confusión que el guardarraíl trata
     de evitar aguas arriba.
@@ -114,5 +151,6 @@ def twiml(texto: str) -> str:
     `<`. Sin escapar, un ampersand rompe el XML y Twilio no entrega NADA — el usuario
     ve silencio y no hay error en ningún lado.
     """
-    globos = "".join(f"<Message>{escape(parte)}</Message>" for parte in _partir(texto))
+    partes = _partir(formatear(texto))
+    globos = "".join(f"<Message>{escape(parte)}</Message>" for parte in partes)
     return f'<?xml version="1.0" encoding="UTF-8"?><Response>{globos}</Response>'

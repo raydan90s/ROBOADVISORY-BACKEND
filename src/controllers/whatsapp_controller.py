@@ -63,11 +63,11 @@ BIENVENIDA = (
 
 AYUDA = (
     "Puedo ayudarte con:\n\n"
-    "• *Tu cuenta*: «¿qué inversiones tengo?», «¿cuál es mi perfil?», «¿cuánto tengo "
-    "sin asignar?», «¿por qué me asignaron ese producto?»\n"
-    "• *Dónde invertir*: «¿qué me conviene a 180 días?», «¿cuál da mejor tasa?», "
-    "«compárame las dos opciones»\n"
-    "• *Conceptos*: «¿qué es renta fija?», «¿por qué importa la calificación?»\n\n"
+    "• *Tu cuenta*: ¿qué inversiones tengo?, ¿cuál es mi perfil?, ¿cuánto tengo sin "
+    "asignar?, ¿por qué me asignaron ese producto?\n"
+    "• *Dónde invertir*: ¿qué me conviene a 180 días?, ¿cuál da mejor tasa?, "
+    "compárame las dos opciones\n"
+    "• *Conceptos*: ¿qué es renta fija?, ¿por qué importa la calificación?\n\n"
     "No predigo precios ni ejecuto compras: eso lo aprueba un asesor.\n"
     "Escribe *SALIR* para desvincular este número."
 )
