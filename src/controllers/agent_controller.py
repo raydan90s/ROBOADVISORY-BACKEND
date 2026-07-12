@@ -332,27 +332,37 @@ def _guardar_turno(
     proposal_id: str,
     mensaje: str,
     estado: dict[str, Any],
+    thread_id: str | None = None,
+    platform: str = "api",
 ) -> None:
-    """Persiste el turno del usuario y el del asistente (evidencia + memoria)."""
+    """Persiste el turno del usuario y el del asistente (evidencia + memoria).
+
+    `thread_id` separa conversaciones que hablan de la MISMA sesión por canales
+    distintos: el chat de la app usa la sesión como hilo, y WhatsApp usa `wa:<teléfono>`.
+    Sin esa separación, lo que el usuario preguntó por WhatsApp reaparecería como
+    historial en la app (y al revés), mezclando dos conversaciones que él vive como
+    independientes. `platform` es lo que hace auditable de dónde vino cada turno.
+    """
+    hilo = thread_id or session_id
     conn.execute(
         """
         insert into public.llm_interactions
             (session_id, proposal_id, thread_id, role, content, platform)
-        values (%s, %s, %s, 'user', %s, 'api')
+        values (%s, %s, %s, 'user', %s, %s)
         """,
-        (session_id, proposal_id, session_id, mensaje),
+        (session_id, proposal_id, hilo, mensaje, platform),
     )
     conn.execute(
         """
         insert into public.llm_interactions
             (session_id, proposal_id, thread_id, role, content, model,
              guardrail_passed, retry_count, metadata, platform)
-        values (%s, %s, %s, 'assistant', %s, %s, %s, %s, %s, 'api')
+        values (%s, %s, %s, 'assistant', %s, %s, %s, %s, %s, %s)
         """,
         (
             session_id,
             proposal_id,
-            session_id,
+            hilo,
             estado["texto"],
             estado["modelo"],
             estado["guardrail_passed"],
@@ -364,6 +374,7 @@ def _guardar_turno(
                     "en_alcance": estado.get("en_alcance", True),
                 }
             ),
+            platform,
         ),
     )
 
