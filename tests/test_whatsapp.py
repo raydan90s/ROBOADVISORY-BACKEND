@@ -110,7 +110,42 @@ def test_lo_que_no_es_un_codigo_no_se_confunde_con_uno(mensaje: str) -> None:
 
 
 # ===========================================================================
-# 3. TwiML: la respuesta que Twilio entrega
+# 3. El formato de salida
+# ===========================================================================
+
+
+def test_los_guillemets_no_llegan_nunca_al_usuario() -> None:
+    """⭐ Se ven como ruido en un globo de chat; salen como comillas rectas."""
+    salida = whatsapp.formatear('Te conviene «Depósito a Plazo Fijo» de «Banco Loja».')
+    assert "«" not in salida and "»" not in salida
+    assert salida == 'Te conviene "Depósito a Plazo Fijo" de "Banco Loja".'
+
+
+def test_el_markdown_se_traduce_a_lo_que_whatsapp_sabe_pintar() -> None:
+    """WhatsApp no renderiza markdown: un '**' se lee literal, con los dos asteriscos."""
+    salida = whatsapp.formatear("## Tus opciones\n\n**Fondo** de Banco Loja\n- tasa 8,5%")
+    assert salida == "*Tus opciones*\n\n*Fondo* de Banco Loja\n• tasa 8,5%"
+
+
+def test_el_titulo_no_se_come_el_parrafo_de_abajo() -> None:
+    """En MULTILINE un `\\s*` final se traga el salto y fusiona las dos líneas."""
+    assert whatsapp.formatear("# Titulo\n\nUn parrafo") == "*Titulo*\n\nUn parrafo"
+
+
+def test_formatear_es_idempotente() -> None:
+    """Se aplica en la única puerta de salida; pasar dos veces no debe deformar nada."""
+    una = whatsapp.formatear("**Hola** «mundo»\n- uno\n- dos")
+    assert whatsapp.formatear(una) == una
+
+
+def test_el_formato_se_aplica_tambien_en_el_twiml() -> None:
+    """La garantía vive en la salida, no en la confianza de que el LLM obedezca el prompt."""
+    xml = whatsapp.twiml("Te conviene el «Fondo» y **nada más**")
+    assert "«" not in xml and "**" not in xml
+
+
+# ===========================================================================
+# 4. TwiML: la respuesta que Twilio entrega
 # ===========================================================================
 
 
