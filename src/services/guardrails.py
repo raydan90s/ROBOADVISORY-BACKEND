@@ -115,6 +115,33 @@ def validar_numeros(texto: str, valores_permitidos: set[Decimal]) -> Veredicto:
     return Veredicto(True)
 
 
+# Una cantidad escrita en palabras («trescientos sesenta días», «once por ciento»)
+# esquiva a `validar_numeros`, que solo lee dígitos: el modelo podría "citar" en letras
+# una cifra que jamás salió de la base. Se rechazan las palabras de cantidad grandes;
+# los conteos chicos («las dos opciones», «tres viñetas») son conversación, no datos,
+# y siguen permitidos — de hecho el prompt los pide así.
+_CANTIDAD_EN_LETRAS = re.compile(
+    r"\b(?:"
+    r"veinti[a-záéíóúü]+|veinte|treinta|cuarenta|cincuenta|sesenta|setenta|ochenta|noventa"
+    r"|cien(?:to|tos)?"
+    r"|(?:dos|tres|cuatro|seis|nove)cient[oa]s|quinient[oa]s|setecient[oa]s|ochocient[oa]s"
+    r"|mil(?:es)?|mill[óo]n|millones"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def validar_cantidades_en_letras(texto: str) -> Veredicto:
+    """Rechaza cantidades escritas en palabras: en letras, un número no se puede verificar."""
+    encontrados = dict.fromkeys(m.lower() for m in _CANTIDAD_EN_LETRAS.findall(texto))
+    motivos = [
+        f"Cantidad escrita en letras: «{palabra}». Escribe toda cifra en dígitos, "
+        "tal como aparece en los DATOS, para que pueda validarse contra la base."
+        for palabra in encontrados
+    ]
+    return Veredicto(not motivos, motivos)
+
+
 # ===========================================================================
 # 2. Léxico prohibido
 # ===========================================================================
@@ -210,10 +237,11 @@ def validar_catalogo(texto: str, ctx: ContextoPermitido) -> Veredicto:
 
 
 def validar(texto: str, ctx: ContextoPermitido) -> Veredicto:
-    """Los tres cierres juntos. Basta que uno falle para rechazar el texto."""
+    """Todos los cierres juntos. Basta que uno falle para rechazar el texto."""
     motivos: list[str] = []
     for veredicto in (
         validar_numeros(texto, ctx.numeros),
+        validar_cantidades_en_letras(texto),
         validar_lexico(texto),
         validar_catalogo(texto, ctx),
     ):
