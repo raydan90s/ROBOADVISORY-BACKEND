@@ -5,6 +5,7 @@ Responde al criterio de evaluación #1 (arquitectura agéntica) y refuerza el #3
 rechazo), y el grafo es corto y auditable:
 
     entrada → router ─┬─(A: bancario)→ qa ──────┐
+                       ├─(A+: asesoria)→asesoria─┤
                        ├─(B: mixto)  → mixto ────┤
                        ├─(C: externo)→ mercado ──┼→ guardrail ─┬─(ok)──────────→ FIN
                        │                         │             ├─(falla,1 vez)→ (misma ruta)
@@ -13,6 +14,10 @@ rechazo), y el grafo es corto y auditable:
 
 - **Ruta A (bancario)**: usa exclusivamente los DATOS del inversionista que salen de
   Postgres (perfil, propuesta, catálogo del banco, subcuentas). Es el flujo original.
+- **Ruta A+ (asesoria)**: "¿dónde invierto?". La RECOMENDACIÓN es la de la Ruta A (el
+  catálogo del banco, nada más), pero el turno cierra con un bloque ADICIONAL —
+  cotizaciones de Alpha Vantage y titulares de GNews— como contexto informativo. Las
+  dos APIs se consultan en paralelo y ninguna puede tumbar el turno.
 - **Ruta B (mixto)**: A + cotizaciones de Alpha Vantage (`market_data.py`), para
   preguntas que comparan el banco con mercados externos.
 - **Ruta C (externo)**: 100% Alpha Vantage — acciones, forex, cripto, índices. NO usa
@@ -41,6 +46,7 @@ seguido de la conversación (historial + pregunta). Los principios:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import unicodedata
@@ -71,6 +77,7 @@ log = logging.getLogger(__name__)
 REFUSE = "refuse"  # marca de modelo para los turnos fuera de alcance
 
 RUTA_BANCARIO = "bancario"  # Ruta A: solo datos del banco
+RUTA_ASESORIA = "asesoria"  # Ruta A+: el banco responde, y de yapa mercados + titulares
 RUTA_MIXTO = "mixto"  # Ruta B: banco + Alpha Vantage
 RUTA_EXTERNO = "externo"  # Ruta C: 100% Alpha Vantage
 RUTA_NOTICIAS = "noticias"  # Ruta D: titulares reales de GNews (feed_service)
@@ -79,14 +86,6 @@ RUTA_RECHAZO = "rechazo"  # fuera de alcance en cualquier ruta
 # Disclaimer breve para el chat (el de la propuesta es largo y aquí lo haría pesado en
 # cada turno). Mantiene el criterio HU2-3: es propuesta, no orden ni promesa.
 DISCLAIMER_CHAT = "Es una propuesta referencial y la revisa un asesor autorizado."
-
-# El aviso NO negociable de las Rutas B y C (pedido explícito del reto): estos
-# instrumentos no son del banco, y la respuesta tiene que decirlo siempre, la
-# escriba el modelo o la plantilla determinista.
-DISCLAIMER_SIMULACION = (
-    "Esta es una simulación educativa con datos de mercados externos (Alpha Vantage). "
-    "Estos instrumentos NO están en el catálogo del banco ni forman parte de tu propuesta."
-)
 
 # Texto fijo de rechazo (ARQUITECTURA-IA §6). No es prompt engineering esperanzado:
 # es un nodo del grafo, y por eso es un caso de prueba reproducible.
@@ -181,6 +180,28 @@ _ES_FOLLOWUP = re.compile(
     re.IGNORECASE | re.VERBOSE,
 )
 
+# "¿Dónde invierto?" — la pregunta madre del robo-advisor. La respuesta SIGUE siendo la
+# del banco (catálogo + propuesta, Ruta A), pero el cliente pidió que además vea, COMO
+# ADICIONAL, qué hacen hoy los mercados externos y qué dicen los titulares. Por eso no cae
+# en la Ruta A pelada sino en la Ruta A+ (`asesoria`), que consulta las dos APIs.
+#
+# Ojo con el orden en `_clasificar_ruta`: "invierte por mí" (una ORDEN) ya se rechazó
+# arriba, y "¿me conviene el bitcoin?" (que nombra un activo externo) se fue a B/C. Acá
+# solo llega la pregunta abierta, la que no nombra ningún instrumento.
+_DONDE_INVERTIR = re.compile(
+    r"""
+    \b(?:
+        (?:d[oó]nde|en\s+qu[eé]|c[oó]mo)\s+(?:puedo\s+|deber[ií]a\s+|me\s+conviene\s+)?
+            (?:invierto|invertir|coloco|colocar|pongo|poner|meto|meter)\w* |
+        qu[eé]\s+(?:me\s+)?(?:recomiendas?|sugieres?|conviene) |
+        recomi[eé]nda\w* | aconséja\w* | consej\w*\s+de\s+inversi[oó]n |
+        d[oó]nde\s+(?:pongo|meto)\s+mi\s+(?:plata|dinero|capital) |
+        opciones?\s+de\s+inversi[oó]n | alternativas?\s+de\s+inversi[oó]n
+    )\b
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
 # Señales de que, ADEMÁS de preguntar por mercados, el cliente quiere comparar/mezclar
 # con el banco (Ruta B). Sin esta señal, una pregunta de mercado es 100% externa (C).
 _MENCION_BANCO = re.compile(
@@ -221,6 +242,12 @@ def _clasificar_ruta(mensaje: str, ruta_previa: str | None = None) -> str:
     # intención manda (titulares, no cotización).
     if _NOTICIAS.search(mensaje):
         return RUTA_NOTICIAS
+    # "¿Dónde invierto?" ANTES que mercados, y por dos razones: (1) la pregunta la responde
+    # el banco aunque el cliente nombre un activo de paso ("¿dónde invierto, en el banco o
+    # en bitcoin?" — la Ruta A+ igual le trae la cotización en el adicional); (2) "dónde
+    # pongo mi PLATA" es dinero, no el metal, y el patrón de mercados lo capturaba.
+    if _DONDE_INVERTIR.search(mensaje):
+        return RUTA_ASESORIA
     if _MERCADO_EXTERNO.search(mensaje):
         return RUTA_MIXTO if _MENCION_BANCO.search(mensaje) else RUTA_EXTERNO
     # Sin palabra de mercado, el DEFAULT es banco. La charla de mercados solo CONTINÚA si el
@@ -612,21 +639,25 @@ REGLA DE ORO (si rompes una, tu respuesta se descarta):
    sin negritas). Si comentas VARIAS cotizaciones, una por línea empezando con "• "
    (símbolo, precio y variación de hoy, y una nota cualitativa breve). Si es un solo
    activo, 2 o 3 frases directas. Nada de introducciones ni párrafos de relleno.
-5. Cierra con UNA frase avisando que es una simulación educativa fuera del catálogo del
-   banco (ver el AVISO abajo — inclúyelo o parafraséalo, sin repetirlo dos veces)."""
+5. NO cierres con avisos ni descargos ("simulación educativa", "fuera del catálogo",
+   "consulta a un asesor"): las cotizaciones son reales y el aviso sobra. Termina en el
+   último dato o comentario útil."""
 
 
-def _bloque_cotizaciones(cotizaciones: list[MarketQuote]) -> str:
+def _bloque_cotizaciones(cotizaciones: list[MarketQuote], con_banco: bool = False) -> str:
+    """Las cotizaciones para el prompt. `con_banco` en las rutas que TAMBIÉN tienen los
+    datos del banco (A+ y B): ahí "los únicos números que puedes usar" sería falso —
+    acotarlo a los de mercados es lo que evita que el modelo se calle una tasa del banco
+    por creerla prohibida."""
     lineas = "\n".join(
         f"- {q.symbol}: USD {q.price:,.2f}"
         + (f", variación {q.change_percent:+.2f}% hoy" if q.change_percent else "")
         + f" [Alpha Vantage]"
         for q in cotizaciones
     )
-    return f"""COTIZACIONES DE MERCADOS EXTERNOS (los ÚNICOS números que puedes usar):
-{lineas}
-
-AVISO OBLIGATORIO: {DISCLAIMER_SIMULACION}"""
+    alcance = "los únicos números de MERCADOS que puedes usar" if con_banco else "los ÚNICOS números que puedes usar"
+    return f"""COTIZACIONES DE MERCADOS EXTERNOS ({alcance}):
+{lineas}"""
 
 
 def build_system_prompt_externo(
@@ -650,20 +681,20 @@ def build_system_prompt_mixto(ctx: ContextoAgente, cotizaciones: list[MarketQuot
 
     Reutiliza `build_system_prompt` tal cual —el cliente sigue sin poder inventarse un
     producto del banco— y le añade el bloque de mercados con su propia regla de oro
-    (no predecir, no prometer) y el aviso de simulación.
+    (no predecir, no prometer).
     """
     return (
         f"{build_system_prompt(ctx)}\n\n"
         "Además de tus datos del banco, también puedes comparar con mercados externos "
         "usando SOLO estas cotizaciones (mismas reglas: no inventes precios, no "
         "predigas, no prometas rentabilidad):\n\n"
-        f"{_bloque_cotizaciones(cotizaciones)}"
+        f"{_bloque_cotizaciones(cotizaciones, con_banco=True)}"
     )
 
 
 def _explicacion_mercado_determinista(cotizaciones: list[MarketQuote]) -> str:
     """Fallback de la Ruta C: pasa el guardarraíl por construcción (números de `cotizaciones`)."""
-    return f"Cotizaciones de referencia: {_texto_cotizaciones(cotizaciones)}.\n\n{DISCLAIMER_SIMULACION}"
+    return f"Cotizaciones de referencia: {_texto_cotizaciones(cotizaciones)}."
 
 
 # ===========================================================================
@@ -786,9 +817,83 @@ def _explicacion_mixta_determinista(ctx: ContextoAgente, cotizaciones: list[Mark
     """Fallback de la Ruta B: la explicación de la propuesta + las cotizaciones, ambas seguras."""
     return (
         f"{explicacion_determinista(ctx.datos)}\n\n"
-        f"Cotizaciones de mercados externos de referencia: {_texto_cotizaciones(cotizaciones)}.\n\n"
-        f"{DISCLAIMER_SIMULACION}"
+        f"Cotizaciones de mercados externos de referencia: {_texto_cotizaciones(cotizaciones)}."
     )
+
+
+# ===========================================================================
+# Ruta A+ (asesoría): "¿dónde invierto?" → el banco responde, y de yapa el mundo
+# ===========================================================================
+
+# El encabezado del bloque adicional. Es literal (no una sugerencia de tono) porque tanto
+# el prompt como el fallback determinista tienen que abrir la sección con la MISMA frase:
+# el usuario debe reconocer de un vistazo dónde termina la recomendación del banco y dónde
+# empieza el contexto de mercado, que es informativo y no forma parte de su propuesta.
+ADICIONAL = "Como adicional:"
+
+_REGLA_DE_ORO_ASESORIA = f"""Además de responder con el catálogo del banco, este turno lleva
+un CIERRE ADICIONAL, porque el cliente preguntó dónde invertir y quiere ver también qué hace
+el mundo hoy. Estructura la respuesta en dos partes, en este orden:
+
+PARTE 1 — LA RECOMENDACIÓN (lo principal): responde con los DATOS del banco de arriba,
+siguiendo la regla de oro de siempre. Es la única parte que recomienda dónde invertir.
+
+PARTE 2 — EL ADICIONAL: una sección corta que empieza EXACTAMENTE con la línea
+"{ADICIONAL}" y luego, máx. 3 viñetas empezando con "• ":
+- Cotizaciones de HOY (de las COTIZACIONES de abajo): símbolo, precio y variación, con una
+  nota CUALITATIVA breve ("muy volátil", "refugio clásico"). Números SOLO de ahí.
+- Si abajo hay TITULARES, UNA viñeta que diga en términos cualitativos de qué van. Sin
+  cifras y sin copiar el titular entero — el usuario los verá citados como enlaces.
+
+REGLAS DEL ADICIONAL (si rompes una, tu respuesta se descarta):
+1. Es CONTEXTO, no una recomendación: no digas que compre, venda ni entre a ningún activo
+   externo, y no predigas hacia dónde va un precio. Recomendar DÓNDE invertir es solo de la
+   PARTE 1 (el banco).
+2. NO inventes ni recalcules precios, variaciones ni titulares.
+3. El adicional es CORTO: máx. 45 palabras en total, texto plano, sin markdown."""
+
+
+def build_system_prompt_asesoria(
+    ctx: ContextoAgente, cotizaciones: list[MarketQuote], feed: FeedResponse | None
+) -> str:
+    """Ruta A+: el prompt del banco (intacto) + las reglas y los datos del bloque adicional."""
+    bloques = [
+        build_system_prompt(ctx),
+        _REGLA_DE_ORO_ASESORIA,
+        _bloque_cotizaciones(cotizaciones, con_banco=True),
+    ]
+    if feed and feed.noticias:
+        bloques.append(_bloque_titulares_prompt(feed))
+    return "\n\n".join(bloques)
+
+
+def contexto_permitido_asesoria(
+    ctx: ContextoAgente, cotizaciones: list[MarketQuote], feed: FeedResponse | None
+) -> ContextoPermitido:
+    """El conjunto citable de la Ruta A+: el del banco + Alpha Vantage + las cifras de los
+    titulares. Los titulares entran aunque el prompt le pida NO citar cifras de noticias:
+    si el modelo desliza una, tiene que ser una que la fuente escribió, no una inventada."""
+    permitido = contexto_permitido_mercado(cotizaciones, base=contexto_permitido_agente(ctx))
+    if not feed:
+        return permitido
+    return ContextoPermitido(
+        numeros=permitido.numeros | contexto_permitido_noticias(feed).numeros,
+        instrumentos=permitido.instrumentos,
+        instituciones=permitido.instituciones,
+        calificaciones=permitido.calificaciones,
+    )
+
+
+def _explicacion_asesoria_determinista(
+    ctx: ContextoAgente, cotizaciones: list[MarketQuote]
+) -> str:
+    """Fallback de la Ruta A+ (LLM caído/ausente): la explicación del banco + el adicional
+    armado con las cotizaciones tal cual. Pasa el guardarraíl por construcción."""
+    texto = explicacion_determinista(ctx.datos)
+    if cotizaciones:
+        texto += f"\n\n{ADICIONAL} así están hoy los mercados externos — "
+        texto += f"{_texto_cotizaciones(cotizaciones)}. Es contexto, no parte de tu propuesta."
+    return texto
 
 
 # ===========================================================================
@@ -952,8 +1057,6 @@ async def mercado_node(state: AgentState) -> AgentState:
             "ctx": ctx_permitido,
         }
 
-    if "simulación educativa" not in texto.lower():
-        texto = f"{texto}\n\n{DISCLAIMER_SIMULACION}"
     return {
         "texto": texto,
         "modelo": modelo_activo(provider),
@@ -996,12 +1099,73 @@ async def mixto_node(state: AgentState) -> AgentState:
             "ctx": ctx_permitido,
         }
 
-    if "simulación educativa" not in texto.lower():
-        texto = f"{texto}\n\n{DISCLAIMER_SIMULACION}"
     return {
         "texto": texto,
         "modelo": modelo_activo(provider),
         "cotizaciones": cotizaciones,
+        "ctx": ctx_permitido,
+    }
+
+
+async def asesoria_node(state: AgentState) -> AgentState:
+    """Ruta A+: "¿dónde invierto?" — la recomendación es del banco; el adicional, del mundo.
+
+    Es la Ruta A con dos lecturas extra (Alpha Vantage y GNews) que se piden EN PARALELO:
+    el turno ya está esperando al LLM, no vale la pena encadenar dos APIs en serie. Ninguna
+    de las dos puede tumbar el turno: si fallan, se responde igual solo con el banco (que
+    es lo que el cliente preguntó) y el adicional simplemente no aparece.
+
+    Contención: solo lecturas. No escribe en `proposals` — igual que el resto de rutas.
+    """
+    ctx = state["contexto"]
+    provider = state.get("provider")
+
+    cotizaciones, feed = await asyncio.gather(
+        market_data.obtener_cotizaciones(_simbolos_de(state["mensaje"])),
+        feed_service.obtener_feed(_tema_noticias(state["mensaje"])),
+        return_exceptions=True,
+    )
+    if isinstance(cotizaciones, BaseException):
+        log.warning("Alpha Vantage falló en la Ruta A+; el adicional va sin cotizaciones: %s", cotizaciones)
+        cotizaciones = []
+    if isinstance(feed, BaseException):
+        log.warning("GNews falló en la Ruta A+; el adicional va sin titulares: %s", feed)
+        feed = None
+
+    ctx_permitido = contexto_permitido_asesoria(ctx, cotizaciones, feed)
+    caida = {
+        "texto": _explicacion_asesoria_determinista(ctx, cotizaciones),
+        "modelo": PLANTILLA,
+        "cotizaciones": cotizaciones,
+        "feed": feed,
+        "ctx": ctx_permitido,
+    }
+
+    if not hay_api_key(provider):
+        log.warning("Sin API key del proveedor de IA: Ruta A+ usa la explicación determinista.")
+        return caida
+
+    try:
+        texto = await _llamar_llm(
+            build_system_prompt_asesoria(ctx, cotizaciones, feed),
+            state.get("historial", []),
+            state["mensaje"],
+            state.get("correccion", ""),
+            provider=provider,
+        )
+    except Exception as exc:
+        log.warning("El proveedor de IA falló en la Ruta A+: %s", exc)
+        return caida
+
+    # Mismo disclaimer que la Ruta A: la PARTE 1 es una propuesta del banco, y eso no
+    # cambia porque el turno traiga un adicional de mercados.
+    if "revisa un asesor" not in texto:
+        texto = f"{texto}\n\n{DISCLAIMER_CHAT}"
+    return {
+        "texto": texto,
+        "modelo": modelo_activo(provider),
+        "cotizaciones": cotizaciones,
+        "feed": feed,
         "ctx": ctx_permitido,
     }
 
@@ -1104,6 +1268,8 @@ def fallback_node(state: AgentState) -> AgentState:
         texto = _explicacion_mercado_determinista(cotizaciones)
     elif ruta == RUTA_MIXTO:
         texto = _explicacion_mixta_determinista(state["contexto"], cotizaciones)
+    elif ruta == RUTA_ASESORIA:
+        texto = _explicacion_asesoria_determinista(state["contexto"], cotizaciones)
     elif ruta == RUTA_NOTICIAS:
         feed = state.get("feed")
         texto = _explicacion_noticias_determinista(feed) if feed else TEXTO_RECHAZO
@@ -1118,6 +1284,7 @@ def fallback_node(state: AgentState) -> AgentState:
 
 _NODO_DE_RUTA = {
     RUTA_BANCARIO: "qa",
+    RUTA_ASESORIA: "asesoria",
     RUTA_MIXTO: "mixto",
     RUTA_EXTERNO: "mercado",
     RUTA_NOTICIAS: "noticias",
@@ -1149,6 +1316,7 @@ def _construir_grafo():
     g = StateGraph(AgentState)
     g.add_node("router", router_node)
     g.add_node("qa", qa_node)
+    g.add_node("asesoria", asesoria_node)
     g.add_node("mixto", mixto_node)
     g.add_node("mercado", mercado_node)
     g.add_node("noticias", noticias_node)
@@ -1160,9 +1328,17 @@ def _construir_grafo():
     g.add_conditional_edges(
         "router",
         _tras_router,
-        {"qa": "qa", "mixto": "mixto", "mercado": "mercado", "noticias": "noticias", "refuse": "refuse"},
+        {
+            "qa": "qa",
+            "asesoria": "asesoria",
+            "mixto": "mixto",
+            "mercado": "mercado",
+            "noticias": "noticias",
+            "refuse": "refuse",
+        },
     )
     g.add_edge("qa", "guardrail")
+    g.add_edge("asesoria", "guardrail")
     g.add_edge("mixto", "guardrail")
     g.add_edge("mercado", "guardrail")
     g.add_edge("noticias", "guardrail")
@@ -1171,6 +1347,7 @@ def _construir_grafo():
         _tras_guardrail,
         {
             "qa": "qa",
+            "asesoria": "asesoria",
             "mixto": "mixto",
             "mercado": "mercado",
             "noticias": "noticias",
@@ -1232,6 +1409,17 @@ async def responder(
         final["sources"] = fuentes_citadas_mercado(cotizaciones, texto)
     elif ruta == RUTA_MIXTO:
         final["sources"] = fuentes_citadas(contexto, texto) + fuentes_citadas_mercado(cotizaciones, texto)
+    elif ruta == RUTA_ASESORIA:
+        # Las tres fuentes del turno. Los titulares se citan SIEMPRE (a diferencia del
+        # banco y de las cotizaciones, que solo entran si el texto las nombró): el
+        # adicional los resume en una frase cualitativa, sin nombrarlos, y son links —
+        # sin el chip, el usuario no tendría cómo abrir la noticia de la que le hablan.
+        feed = final.get("feed")
+        final["sources"] = (
+            fuentes_citadas(contexto, texto)
+            + fuentes_citadas_mercado(cotizaciones, texto)
+            + (fuentes_citadas_noticias(feed) if feed else [])
+        )
     else:
         final["sources"] = fuentes_citadas(contexto, texto)
     return final
