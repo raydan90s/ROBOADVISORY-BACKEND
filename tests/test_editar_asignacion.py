@@ -11,11 +11,11 @@ app real (los candados viven en el servidor, no en la pantalla):
    aprueba nada: el estado sigue `pending_review`.
 """
 
-import uuid
 from collections.abc import Iterator
 
 import pytest
 from fastapi.testclient import TestClient
+from tests.ayudas_auth import cabeceras_de, registrar_verificado
 
 from src.config.database import get_connection
 from src.main import app
@@ -109,13 +109,11 @@ def cuenta_desechable() -> Iterator[list[str]]:
 
 
 def _registrar(cuenta_desechable: list[str]) -> tuple[str, dict[str, str]]:
-    email = f"zz-editar-{uuid.uuid4().hex[:8]}@test.local"
-    registro = CLIENTE.post(
-        "/api/auth/register",
-        json={"nombre": "ZZ Editar", "email": email, "password": "demo1234"},
-    ).json()
+    # El registro ya no devuelve token: la cuenta nace con el correo sin verificar. El
+    # ayudante hace el paso que en la app hace el usuario — leer el código y canjearlo.
+    registro = registrar_verificado(CLIENTE, "editar", "ZZ Editar")
     cuenta_desechable.append(registro["user_id"])
-    return registro["user_id"], {"Authorization": f"Bearer {registro['access_token']}"}
+    return registro["user_id"], cabeceras_de(registro)
 
 
 @pytest.fixture

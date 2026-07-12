@@ -67,6 +67,27 @@ class Settings(BaseSettings):
     # siempre sobre el proveedor con cuota (OpenAI). Vacío = usa AI_PROVIDER.
     WHATSAPP_AI_PROVIDER: str = "openai"
 
+    # --- Correo saliente (SMTP de Gmail) ---
+    # Es lo que hace que el registro pruebe que el buzón EXISTE, no solo que la cadena
+    # parezca un correo. Gmail exige una "App Password" de 16 caracteres (Cuenta de
+    # Google > Seguridad > Verificación en 2 pasos > Contraseñas de aplicaciones): la
+    # contraseña normal de la cuenta es rechazada desde 2022.
+    #
+    # Sin credenciales el envío NO revienta: en development el código se imprime en el
+    # log de uvicorn (se puede probar el flujo entero sin Gmail) y en production sí
+    # falla, porque ahí un código que nadie recibe es una cuenta que nadie puede abrir.
+    SMTP_HOST: str = "smtp.gmail.com"
+    # 587 = STARTTLS (el de Gmail). 465 = SSL directo; el mailer elige solo según esto.
+    SMTP_PORT: int = 587
+    SMTP_USER: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_FROM_NAME: str = "Brokeate"
+    # Gmail reescribe el remitente al de la cuenta autenticada, así que dejarlo vacío
+    # (= SMTP_USER) es lo correcto salvo que uses un alias verificado.
+    SMTP_FROM_EMAIL: str = ""
+    # Ventana del código de seis dígitos. Corta a propósito: es un secreto de un solo uso.
+    EMAIL_CODE_TTL_MINUTES: int = 15
+
     # Auth: firma de los JWT. En producción es obligatorio ponerlo en el entorno
     # (Render); si se queda el default, los tokens de todos los despliegues serían
     # falsificables con una llave pública.
