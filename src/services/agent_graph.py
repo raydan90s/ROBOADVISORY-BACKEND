@@ -48,7 +48,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, TypedDict
 
-from src.services import market_data
+from src.services import feed_service, market_data
 from src.services.ai_agent import (
     PLANTILLA,
     DatosExplicacion,
@@ -56,9 +56,15 @@ from src.services.ai_agent import (
     contexto_permitido,
     explicacion_determinista,
 )
-from src.services.guardrails import ContextoPermitido, validar
+from src.services.guardrails import (
+    ContextoPermitido,
+    extraer_numeros,
+    validar,
+    validar_noticias,
+)
 from src.services.llm_provider import crear_llm, hay_api_key, modelo_activo
 from src.services.market_data import MarketQuote
+from src.models.feed import FeedResponse
 
 log = logging.getLogger(__name__)
 
@@ -67,6 +73,7 @@ REFUSE = "refuse"  # marca de modelo para los turnos fuera de alcance
 RUTA_BANCARIO = "bancario"  # Ruta A: solo datos del banco
 RUTA_MIXTO = "mixto"  # Ruta B: banco + Alpha Vantage
 RUTA_EXTERNO = "externo"  # Ruta C: 100% Alpha Vantage
+RUTA_NOTICIAS = "noticias"  # Ruta D: titulares reales de GNews (feed_service)
 RUTA_RECHAZO = "rechazo"  # fuera de alcance en cualquier ruta
 
 # Disclaimer breve para el chat (el de la propuesta es largo y aquí lo haría pesado en
@@ -117,7 +124,22 @@ _FUERA_DE_ALCANCE = re.compile(
         (?:compra|vende)\s+(?:por\s+m[ií]|mis?\b) |
         trad[uú]ce\w* | traducci[oó]n | (?:escribe|dame|genera)\s+(?:un\s+)?c[oó]digo |
         program[ae]\w* | receta | chiste | poema |
-        clima | noticias? | deporte\w* | f[uú]tbol | pel[ií]cula\w* | hor[oó]scopo
+        clima | deporte\w* | f[uú]tbol | pel[ií]cula\w* | hor[oó]scopo
+    )\b
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+# Intención de noticias/actualidad: ahora el chatbot SÍ contesta, citando titulares
+# reales de GNews (`feed_service`). Antes "noticias" caía en `_FUERA_DE_ALCANCE`; se sacó
+# de ahí y se atiende con la Ruta D. Ojo: "qué VA A pasar" sigue siendo predicción
+# (fuera de alcance) y se ataja antes; "qué ESTÁ pasando" es actualidad y entra aquí.
+_NOTICIAS = re.compile(
+    r"""
+    \b(?:
+        noticias? | novedades? | titulares? | prensa | actualidad |
+        qu[eé]\s+est[áa]\s+pasando | qu[eé]\s+pasa\s+(?:con|en) | \bpas[óo]\b |
+        \b[uú]ltim[oa]\s+hora
     )\b
     """,
     re.IGNORECASE | re.VERBOSE,
@@ -130,10 +152,26 @@ _MERCADO_EXTERNO = re.compile(
     \b(?:
         bitcoin | btc | cripto\w* | ethereum | eth |
         forex | eur\s*/?\s*usd | euro | d[oó]lar |
-        oro | xau | plata | xag |
+        oro\w* | orit[oa]s? | xau | plata\w* | xag |
         nasdaq | s\s*&\s*p\s*500? | spy | acci[oó]n\w* | bolsa | índice\w* | indice\w* |
         nikkei | jpn\s*225 | jap[oó]n | mercados?\s+(?:externos?|internacionales?) |
         cotizaci[oó]n\w*
+    )\b
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+# Un follow-up ANAFÓRICO: un mensaje que NO trae tema propio y se apoya en el turno
+# anterior ("y eso?", "cómo lo ves?", "sí, el que me diste"). Es la ÚNICA señal que hace
+# que una charla de mercados continúe en mercados sin repetir la palabra clave. Sin esto,
+# la "memoria de ruta" se quedaba pegada en amarillo para TODA pregunta siguiente.
+_ES_FOLLOWUP = re.compile(
+    r"""
+    ^\s*(?: y | e | pero | entonces | ah | ok | okay | vale | s[ií] )\b |
+    \b(?:
+        eso | es[eoa]s? | aquell[oa]s? | reci[eé]n |
+        el\s+que\s+me\s+diste | lo\s+que\s+me\s+diste |
+        (?:me\s+)?acabas\s+de\s+dar | c[oó]mo\s+lo\s+ves | qu[eé]\s+tal | m[aá]s\s+detalle
     )\b
     """,
     re.IGNORECASE | re.VERBOSE,
@@ -156,25 +194,46 @@ _MENCION_BANCO = re.compile(
 # ninguno en particular ("¿cómo están los mercados?"), se piden los 5 del ticker.
 _SIMBOLO_POR_PALABRA: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"bitcoin|btc|cripto\w*", re.IGNORECASE), "BTCUSD"),
-    (re.compile(r"oro\b|xau", re.IGNORECASE), "XAUUSD"),
+    (re.compile(r"oro\w*|orit[oa]s?|xau", re.IGNORECASE), "XAUUSD"),
     (re.compile(r"nikkei|jpn\s*225|jap[oó]n", re.IGNORECASE), "JPN225"),
     (re.compile(r"s\s*&\s*p\s*500?|spy|nasdaq|acci[oó]n\w*|bolsa", re.IGNORECASE), "SPY"),
     (re.compile(r"eur\s*/?\s*usd|euro|d[oó]lar", re.IGNORECASE), "EURUSD"),
 ]
 
 
-def _clasificar_ruta(mensaje: str) -> str:
-    """El router determinista de las 3 rutas + rechazo. Ver el diagrama del módulo."""
+def _clasificar_ruta(mensaje: str, ruta_previa: str | None = None) -> str:
+    """El router determinista de las 4 rutas + rechazo. Ver el diagrama del módulo.
+
+    `ruta_previa` es la ruta del ÚLTIMO turno del asistente (de `llm_interactions`). Sirve
+    para los follow-ups sin palabra clave: "¿y cómo lo ves?" / "sí, el que me diste"
+    después de una respuesta de mercados no traen ninguna palabra que el router reconozca,
+    así que sin memoria caerían a la Ruta A (banco) y el agente diría "no tengo ese dato"
+    aunque lo acabe de dar. Con memoria, un follow-up de una charla de mercados sigue en
+    mercados; si además menciona el banco, pasa a mixto (que tiene ambos contextos).
+    """
     if _FUERA_DE_ALCANCE.search(mensaje):
         return RUTA_RECHAZO
-    if not _MERCADO_EXTERNO.search(mensaje):
-        return RUTA_BANCARIO
-    return RUTA_MIXTO if _MENCION_BANCO.search(mensaje) else RUTA_EXTERNO
+    # Noticias antes que mercados: "noticias del bitcoin" trae ambas palabras y la
+    # intención manda (titulares, no cotización).
+    if _NOTICIAS.search(mensaje):
+        return RUTA_NOTICIAS
+    if _MERCADO_EXTERNO.search(mensaje):
+        return RUTA_MIXTO if _MENCION_BANCO.search(mensaje) else RUTA_EXTERNO
+    # Sin palabra de mercado, el DEFAULT es banco. La charla de mercados solo CONTINÚA si el
+    # mensaje es un follow-up anafórico (sin tema propio) Y no menciona el banco — así una
+    # pregunta nueva cualquiera vuelve a banco en vez de quedarse pegada en amarillo.
+    if (
+        ruta_previa in (RUTA_MIXTO, RUTA_EXTERNO)
+        and _ES_FOLLOWUP.search(mensaje)
+        and not _MENCION_BANCO.search(mensaje)
+    ):
+        return ruta_previa
+    return RUTA_BANCARIO
 
 
 def _fuera_de_alcance(mensaje: str) -> bool:
     """Compat: el chequeo de alcance como booleano, para quien solo necesita eso
-    (`whatsapp_controller.py`/`test_whatsapp.py`) sin pasar por las 3 rutas."""
+    (`whatsapp_controller.py`/`test_whatsapp.py`) sin pasar por las rutas."""
     return _clasificar_ruta(mensaje) == RUTA_RECHAZO
 
 
@@ -529,17 +588,28 @@ def build_system_prompt(ctx: ContextoAgente) -> str:
 # ===========================================================================
 
 _REGLA_DE_ORO_MERCADO = """Eres un asistente educativo de mercados externos (fuera del
-catálogo del banco): acciones, forex, cripto e índices.
+catálogo del banco): acciones, forex, cripto e índices. Ya no solo recitas la cotización:
+la LEES y la COMENTAS con criterio, siempre sobre el dato de HOY.
 
 REGLA DE ORO (si rompes una, tu respuesta se descarta):
 1. FUENTE DE VERDAD = las COTIZACIONES de abajo (Alpha Vantage). NO inventes ni
-   recalcules ningún precio ni variación porcentual.
-2. NO prediges hacia dónde va un precio, NO recomiendas comprar ni vender, y NO
-   prometes rentabilidad ("garantizado", "seguro", "sin riesgo", "vas a ganar"
-   prohibidos). Son cotizaciones de referencia, no una recomendación.
-3. SÉ BREVE: máx. 60 palabras, tono cercano, tuteando, sin markdown.
-4. SIEMPRE deja claro que es una simulación educativa y que estos instrumentos no
-   están en el catálogo del banco (ver el AVISO abajo — inclúyelo o parafraséalo)."""
+   recalcules ningún precio ni variación porcentual: todo número que escribas tiene que
+   estar en las COTIZACIONES.
+2. SÍ PUEDES OPINAR sobre los datos ACTUALES: leer el precio y la variación de hoy, decir
+   si se mueve mucho o poco, y explicar en términos CUALITATIVOS qué tipo de activo es
+   (cripto muy volátil, el oro como refugio, un índice de renta variable). Si abajo
+   aparece el PERFIL del inversionista, relaciónalo cualitativamente ("tan volátil no
+   calza con tu perfil conservador") — SIN citar cifras, productos ni bancos del catálogo.
+3. HABLAS DEL PRESENTE, NO DEL FUTURO. PROHIBIDO: predecir hacia dónde va un precio ("va a
+   subir", "conviene entrar ahora"), recomendar comprar o vender un activo externo, y
+   prometer rentabilidad ("garantizado", "seguro", "sin riesgo", "vas a ganar"). El
+   movimiento de hoy SÍ; el de mañana NO. Recomendar DÓNDE invertir es solo del banco.
+4. AL GRANO Y CORTO: máx. 55 palabras, tono cercano, tuteando, texto plano (sin markdown,
+   sin negritas). Si comentas VARIAS cotizaciones, una por línea empezando con "• "
+   (símbolo, precio y variación de hoy, y una nota cualitativa breve). Si es un solo
+   activo, 2 o 3 frases directas. Nada de introducciones ni párrafos de relleno.
+5. Cierra con UNA frase avisando que es una simulación educativa fuera del catálogo del
+   banco (ver el AVISO abajo — inclúyelo o parafraséalo, sin repetirlo dos veces)."""
 
 
 def _bloque_cotizaciones(cotizaciones: list[MarketQuote]) -> str:
@@ -555,9 +625,20 @@ def _bloque_cotizaciones(cotizaciones: list[MarketQuote]) -> str:
 AVISO OBLIGATORIO: {DISCLAIMER_SIMULACION}"""
 
 
-def build_system_prompt_externo(cotizaciones: list[MarketQuote]) -> str:
-    """Ruta C: 100% Alpha Vantage. El prompt NO incluye nada del catálogo del banco."""
-    return f"{_REGLA_DE_ORO_MERCADO}\n\n{_bloque_cotizaciones(cotizaciones)}"
+def build_system_prompt_externo(
+    cotizaciones: list[MarketQuote], perfil: str | None = None
+) -> str:
+    """Ruta C: 100% Alpha Vantage. El prompt NO incluye ninguna cifra del catálogo del
+    banco, pero SÍ el nombre del perfil de riesgo (dato cualitativo) para que el agente
+    pueda relacionar el activo externo con el inversionista sin citar números del banco."""
+    contexto_perfil = (
+        f"\n\nEl inversionista tiene perfil de riesgo: {perfil}. Es un dato CUALITATIVO "
+        "para que puedas relacionar el activo con él; NO cites números, productos ni "
+        "bancos del catálogo (aquí no los tienes)."
+        if perfil
+        else ""
+    )
+    return f"{_REGLA_DE_ORO_MERCADO}\n\n{_bloque_cotizaciones(cotizaciones)}{contexto_perfil}"
 
 
 def build_system_prompt_mixto(ctx: ContextoAgente, cotizaciones: list[MarketQuote]) -> str:
@@ -579,6 +660,122 @@ def build_system_prompt_mixto(ctx: ContextoAgente, cotizaciones: list[MarketQuot
 def _explicacion_mercado_determinista(cotizaciones: list[MarketQuote]) -> str:
     """Fallback de la Ruta C: pasa el guardarraíl por construcción (números de `cotizaciones`)."""
     return f"Cotizaciones de referencia: {_texto_cotizaciones(cotizaciones)}.\n\n{DISCLAIMER_SIMULACION}"
+
+
+# ===========================================================================
+# Ruta D (noticias): titulares reales de GNews (feed_service)
+# ===========================================================================
+
+# Cuántas noticias entran (al prompt y a la respuesta): pocas y claras. GNews devuelve
+# hasta 10; 3 titulares es lo que cabe en un globo de chat sin volverlo un muro de texto.
+_MAX_NOTICIAS = 3
+
+# El aviso de la Ruta D: los titulares son de terceros, no del banco. Mismo espíritu que
+# el DISCLAIMER_SIMULACION de mercados: la app CITA la noticia, no la avala. Corto a
+# propósito: el globo ya trae los titulares, no hace falta un párrafo de descargo.
+DISCLAIMER_NOTICIAS = "Noticias de terceros (GNews). No son una recomendación del banco."
+
+# Palabra clave del mensaje → tema de `feed_service`. Si no matchea ninguno, el tema
+# general de mercados. Los temas son los que ya sirve el feed (mercados/cripto/materias/
+# ecuador), no se inventan aquí.
+_TEMA_POR_PALABRA: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"bitcoin|btc|cripto\w*|ethereum|eth", re.IGNORECASE), "cripto"),
+    (re.compile(r"oro\w*|orit[oa]s?|plata\w*|petr[oó]leo|materias?\s+primas?|commodit\w*", re.IGNORECASE), "materias"),
+    (re.compile(r"ecuador|nacional(?:es)?|local(?:es)?|del\s+pa[ií]s", re.IGNORECASE), "ecuador"),
+]
+
+
+def _tema_noticias(mensaje: str) -> str:
+    """El tema del feed que mejor calza con la pregunta (o el general si ninguno)."""
+    for patron, tema in _TEMA_POR_PALABRA:
+        if patron.search(mensaje):
+            return tema
+    return feed_service.TEMA_DEFAULT
+
+
+def contexto_permitido_noticias(feed: FeedResponse) -> ContextoPermitido:
+    """El conjunto citable de la Ruta D: los números que aparecen en los titulares REALES.
+
+    A diferencia del banco y de mercados, aquí no hay catálogo cerrado: la noticia trae
+    bancos y cifras del mundo real. Se permiten exactamente los números que la fuente
+    escribió (título + descripción), para que el modelo pueda restarlos sin inventar uno
+    nuevo. `validar_noticias` no revisa productos/emisores (serían falsos positivos)."""
+    numeros = set()
+    for n in feed.noticias:
+        numeros.update(extraer_numeros(n.titulo))
+        if n.descripcion:
+            numeros.update(extraer_numeros(n.descripcion))
+    return ContextoPermitido(numeros=numeros, instrumentos=set(), instituciones=set(), calificaciones=set())
+
+
+def _resumen_titulo(titulo: str, limite: int = 52) -> str:
+    """Título recortado para el chip: una cita corta, no el titular entero."""
+    titulo = titulo.strip()
+    return titulo if len(titulo) <= limite else titulo[: limite - 1].rstrip() + "…"
+
+
+def _bloque_titulares_prompt(feed: FeedResponse) -> str:
+    """Los titulares para el PROMPT: solo el título (sin descripción, para que el modelo no
+    la copie y alargue la respuesta)."""
+    lineas = "\n".join(f"- {n.titulo}" for n in feed.noticias[:_MAX_NOTICIAS])
+    return f"TITULARES REALES (tema {feed.tema}):\n{lineas}"
+
+
+_REGLA_DE_ORO_NOTICIAS = """Eres un asistente que ayuda a un inversionista a ubicarse en la
+actualidad financiera. Abajo tienes TITULARES REALES (de GNews, cada uno con su fuente).
+
+REGLA DE ORO (si rompes una, tu respuesta se descarta):
+1. NO inventes noticias, datos ni cifras. Tu único material son los TITULARES de abajo.
+2. Escribe UNA sola frase MUY corta (máx. 15 palabras), como ORACIÓN COMPLETA (sin dos
+   puntos al final), que resuma de qué van los titulares en términos CUALITATIVOS. El
+   usuario verá las noticias citadas como ENLACES debajo de tu frase, así que NO las
+   enumeres ni las repitas. NO uses cifras ni afirmes hechos que no estén en los
+   titulares. Ejemplo del tono: "El bitcoin y la cautela del mercado dominan hoy."
+3. NO predices precios ni recomiendas comprar o vender, y NO prometes rentabilidad. Una
+   noticia no es una recomendación de inversión.
+4. Tono cercano, tuteando, texto plano (sin markdown). SOLO esa frase, sin saludo,
+   sin cierre, sin relleno."""
+
+
+def build_system_prompt_noticias(feed: FeedResponse) -> str:
+    """Ruta D: la regla de oro de noticias + los titulares reales del tema."""
+    return f"{_REGLA_DE_ORO_NOTICIAS}\n\n{_bloque_titulares_prompt(feed)}"
+
+
+def _una_frase(texto: str, limite: int = 160) -> str:
+    """Recorta la salida del LLM a UNA sola frase corta: la primera línea con contenido,
+    sin viñeta. Es el blindaje contra un modelo que enumera los titulares aunque el prompt
+    pida una sola frase — el cuerpo de noticias tiene que quedarse liviano SÍ O SÍ, porque
+    la lista real vive en los source chips, no en el texto."""
+    for linea in texto.splitlines():
+        limpia = linea.strip().lstrip("•-*·–—").strip()
+        if limpia:
+            return limpia if len(limpia) <= limite else limpia[: limite - 1].rstrip() + "…"
+    return "Esto es lo más reciente que encontré sobre el tema."
+
+
+def _explicacion_noticias_determinista(feed: FeedResponse) -> str:
+    """Fallback de la Ruta D (LLM caído/ausente): una frase que apunta a las citas, sin
+    listar nada en el cuerpo. Pasa el guardarraíl por construcción (no tiene cifras)."""
+    if not feed.noticias:
+        return f"No encontré noticias disponibles ahora mismo.\n\n{DISCLAIMER_NOTICIAS}"
+    return (
+        "Aquí tienes los titulares más recientes; tócalos para abrir la noticia.\n\n"
+        f"{DISCLAIMER_NOTICIAS}"
+    )
+
+
+def fuentes_citadas_noticias(feed: FeedResponse) -> list[dict[str, Any]]:
+    """Source chips de la Ruta D: cada noticia como una CITA corta (título resumido +
+    fuente) cuyo `record_id` es el link real — el front lo abre al tocarla."""
+    return [
+        {
+            "table": "gnews",
+            "record_id": n.url or n.titulo,
+            "label": f"{_resumen_titulo(n.titulo)} · {n.fuente}",
+        }
+        for n in feed.noticias[:_MAX_NOTICIAS]
+    ]
 
 
 def _explicacion_mixta_determinista(ctx: ContextoAgente, cotizaciones: list[MarketQuote]) -> str:
@@ -631,10 +828,15 @@ class AgentState(TypedDict, total=False):
     # NO clasifica el mensaje — fuerza la Ruta C con exactamente estos símbolos.
     simbolos_forzados: list[str] | None
 
-    # Ruta elegida por el router: "bancario" | "mixto" | "externo" | "rechazo".
+    # Ruta del ÚLTIMO turno del asistente (para los follow-ups sin palabra clave).
+    ruta_previa: str | None
+
+    # Ruta elegida por el router: "bancario" | "mixto" | "externo" | "noticias" | "rechazo".
     ruta: str
-    # Cotizaciones de Alpha Vantage pedidas para este turno (vacío en Ruta A).
+    # Cotizaciones de Alpha Vantage pedidas para este turno (vacío salvo en Ruta B/C).
     cotizaciones: list[MarketQuote]
+    # Feed de noticias pedido para este turno (solo en Ruta D).
+    feed: FeedResponse | None
     correccion: str
 
     texto: str
@@ -659,7 +861,7 @@ def router_node(state: AgentState) -> AgentState:
     """
     if state.get("simbolos_forzados"):
         return {"ruta": RUTA_EXTERNO}
-    return {"ruta": _clasificar_ruta(state["mensaje"])}
+    return {"ruta": _clasificar_ruta(state["mensaje"], state.get("ruta_previa"))}
 
 
 async def qa_node(state: AgentState) -> AgentState:
@@ -710,7 +912,11 @@ async def mercado_node(state: AgentState) -> AgentState:
     """
     simbolos = state.get("simbolos_forzados") or _simbolos_de(state["mensaje"])
     cotizaciones = await market_data.obtener_cotizaciones(simbolos)
-    system = build_system_prompt_externo(cotizaciones)
+    # El nombre del perfil (dato cualitativo) para que pueda relacionar el activo con el
+    # inversionista. NO entra ningún número del banco: el guardarraíl de esta ruta sigue
+    # siendo solo Alpha Vantage.
+    perfil = state["contexto"].datos.investor.perfil_riesgo.value
+    system = build_system_prompt_externo(cotizaciones, perfil=perfil)
     provider = state.get("provider")
     # El guardarraíl de esta ruta solo permite los números de Alpha Vantage: CERO
     # contexto del banco, aunque `state["contexto"]` (el del banco) siga cargado.
@@ -796,13 +1002,63 @@ async def mixto_node(state: AgentState) -> AgentState:
     }
 
 
+async def noticias_node(state: AgentState) -> AgentState:
+    """Ruta D: titulares reales de GNews (feed_service). El cuerpo del mensaje es UNA sola
+    frase (la del LLM, recortada por `_una_frase` para que no enumere aunque quiera); los
+    titulares NO van en el texto, viven en los source chips (cita corta + link real).
+
+    Contención: este nodo solo LEE (GNews) y devuelve texto. No escribe en `proposals`
+    ni en ninguna otra tabla — igual que las Rutas B/C."""
+    feed = await feed_service.obtener_feed(_tema_noticias(state["mensaje"]))
+    ctx_permitido = contexto_permitido_noticias(feed)
+    provider = state.get("provider")
+
+    # Sin noticias o sin key: se muestran los titulares tal cual (o el respaldo del feed).
+    if not feed.noticias or not hay_api_key(provider):
+        return {
+            "texto": _explicacion_noticias_determinista(feed),
+            "modelo": PLANTILLA,
+            "feed": feed,
+            "ctx": ctx_permitido,
+        }
+
+    system = build_system_prompt_noticias(feed)
+    try:
+        intro = await _llamar_llm(
+            system,
+            state.get("historial", []),
+            state["mensaje"],
+            state.get("correccion", ""),
+            provider=provider,
+        )
+    except Exception as exc:
+        log.warning("El proveedor de IA falló en la Ruta D (noticias): %s", exc)
+        return {
+            "texto": _explicacion_noticias_determinista(feed),
+            "modelo": PLANTILLA,
+            "feed": feed,
+            "ctx": ctx_permitido,
+        }
+
+    # Solo UNA frase (recortada) + el aviso. Los titulares NO van en el cuerpo: viven en
+    # los source chips (cita corta + link real), para que el mensaje sea liviano. El
+    # recorte es lo que garantiza que no aparezca una lista aunque el modelo la escriba.
+    texto = f"{_una_frase(intro)}\n\n{DISCLAIMER_NOTICIAS}"
+    return {"texto": texto, "modelo": modelo_activo(provider), "feed": feed, "ctx": ctx_permitido}
+
+
 def guardrail_node(state: AgentState) -> AgentState:
     """Valida el texto contra el conjunto permitido de la ruta. Si falla, prepara el reintento."""
     # Si la respuesta ya vino de la plantilla (LLM caído/ausente), pasa por construcción.
     if state["modelo"] == PLANTILLA:
         return {"guardrail_passed": True, "motivos": []}
 
-    veredicto = validar(state["texto"], state["ctx"])
+    # Noticias tienen su propio contrato: números solo de los titulares reales, sin
+    # catálogo cerrado (la fuente cita bancos y cifras del mundo real que no inventamos).
+    if state.get("ruta") == RUTA_NOTICIAS:
+        veredicto = validar_noticias(state["texto"], state["ctx"])
+    else:
+        veredicto = validar(state["texto"], state["ctx"])
     if veredicto.ok:
         return {"guardrail_passed": True, "motivos": []}
 
@@ -844,6 +1100,9 @@ def fallback_node(state: AgentState) -> AgentState:
         texto = _explicacion_mercado_determinista(cotizaciones)
     elif ruta == RUTA_MIXTO:
         texto = _explicacion_mixta_determinista(state["contexto"], cotizaciones)
+    elif ruta == RUTA_NOTICIAS:
+        feed = state.get("feed")
+        texto = _explicacion_noticias_determinista(feed) if feed else TEXTO_RECHAZO
     else:
         texto = explicacion_determinista(state["contexto"].datos)
     return {"texto": texto, "modelo": PLANTILLA, "guardrail_passed": True}
@@ -853,7 +1112,12 @@ def fallback_node(state: AgentState) -> AgentState:
 # Aristas condicionales
 # ===========================================================================
 
-_NODO_DE_RUTA = {RUTA_BANCARIO: "qa", RUTA_MIXTO: "mixto", RUTA_EXTERNO: "mercado"}
+_NODO_DE_RUTA = {
+    RUTA_BANCARIO: "qa",
+    RUTA_MIXTO: "mixto",
+    RUTA_EXTERNO: "mercado",
+    RUTA_NOTICIAS: "noticias",
+}
 
 
 def _tras_router(state: AgentState) -> str:
@@ -883,21 +1147,32 @@ def _construir_grafo():
     g.add_node("qa", qa_node)
     g.add_node("mixto", mixto_node)
     g.add_node("mercado", mercado_node)
+    g.add_node("noticias", noticias_node)
     g.add_node("guardrail", guardrail_node)
     g.add_node("refuse", refuse_node)
     g.add_node("fallback", fallback_node)
 
     g.set_entry_point("router")
     g.add_conditional_edges(
-        "router", _tras_router, {"qa": "qa", "mixto": "mixto", "mercado": "mercado", "refuse": "refuse"}
+        "router",
+        _tras_router,
+        {"qa": "qa", "mixto": "mixto", "mercado": "mercado", "noticias": "noticias", "refuse": "refuse"},
     )
     g.add_edge("qa", "guardrail")
     g.add_edge("mixto", "guardrail")
     g.add_edge("mercado", "guardrail")
+    g.add_edge("noticias", "guardrail")
     g.add_conditional_edges(
         "guardrail",
         _tras_guardrail,
-        {"qa": "qa", "mixto": "mixto", "mercado": "mercado", "fallback": "fallback", "fin": END},
+        {
+            "qa": "qa",
+            "mixto": "mixto",
+            "mercado": "mercado",
+            "noticias": "noticias",
+            "fallback": "fallback",
+            "fin": END,
+        },
     )
     g.add_edge("refuse", END)
     g.add_edge("fallback", END)
@@ -917,6 +1192,7 @@ async def responder(
     historial: list[tuple[str, str]] | None = None,
     provider: str | None = None,
     simbolos_forzados: list[str] | None = None,
+    ruta_previa: str | None = None,
 ) -> AgentState:
     """Corre el grafo para un turno y devuelve el estado final.
 
@@ -930,10 +1206,11 @@ async def responder(
     estado: AgentState = {
         "mensaje": mensaje,
         "contexto": contexto,
-        "ctx": contexto_permitido_agente(contexto),  # override si la ruta es B/C
+        "ctx": contexto_permitido_agente(contexto),  # override si la ruta es B/C/D
         "historial": historial or [],
         "provider": provider,
         "simbolos_forzados": simbolos_forzados,
+        "ruta_previa": ruta_previa,
         "retry_count": 0,
     }
     final = await _GRAFO.ainvoke(estado)
@@ -944,6 +1221,9 @@ async def responder(
     # Los chips se calculan sobre el texto YA generado: solo las fuentes que citó.
     if final.get("modelo") == REFUSE:
         final["sources"] = []
+    elif ruta == RUTA_NOTICIAS:
+        feed = final.get("feed")
+        final["sources"] = fuentes_citadas_noticias(feed) if feed else []
     elif ruta == RUTA_EXTERNO:
         final["sources"] = fuentes_citadas_mercado(cotizaciones, texto)
     elif ruta == RUTA_MIXTO:
