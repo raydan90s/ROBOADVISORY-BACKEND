@@ -23,8 +23,18 @@ async def get_rates(
     plazo_dias: int | None = Query(
         None, gt=0, description="Filtra los depósitos a ese plazo (los fondos no tienen plazo y siempre salen)."
     ),
+    todos_los_plazos: bool = Query(
+        False,
+        description=(
+            "Apaga el filtro por plazo y devuelve TODO el catálogo. `plazo_dias` sigue "
+            "siendo el horizonte con el que se estiman los fondos. Lo usa el simulador, "
+            "que necesita todas las opciones para poder cambiar de banco o de fondo."
+        ),
+    ),
     usuario: CurrentUser = Depends(get_current_user),
 ) -> CatalogoTasas:
     # Los no elegibles NO se filtran: van marcados con su motivo. Enseñar la regla
     # trabajando vale más que esconder la fila (criterio HU2 de la Guía).
-    return await catalog_controller.listar_tasas(usuario.id, monto, plazo_dias)
+    return await catalog_controller.listar_tasas(
+        usuario.id, monto, plazo_dias, todos_los_plazos
+    )

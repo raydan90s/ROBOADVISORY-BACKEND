@@ -17,9 +17,9 @@ import logging
 from dataclasses import dataclass, field
 from decimal import Decimal
 
-from src.config.settings import settings
 from src.models.investor import AssetAllocation, Investor, NivelRiesgo
 from src.services.guardrails import ContextoPermitido, validar
+from src.services.llm_provider import crear_llm, hay_api_key, modelo_activo
 
 log = logging.getLogger(__name__)
 
@@ -223,14 +223,9 @@ Redacta la explicación para el cliente."""
 
 
 async def _generar_con_gemini(prompt: str, reintento: str = "") -> str:
-    # Import perezoso: si la Fase 3 no está configurada, la app arranca igual.
-    from langchain_google_genai import ChatGoogleGenerativeAI
-
-    llm = ChatGoogleGenerativeAI(
-        model=settings.GEMINI_MODEL,
-        google_api_key=settings.GEMINI_API_KEY,
-        temperature=0.2,  # bajo: queremos fidelidad a los datos, no creatividad
-    )
+    # El proveedor (Gemini/OpenAI/Anthropic) y el modelo los elige el .env; ver
+    # llm_provider.py. El nombre histórico de la función se conserva por los tests.
+    llm = crear_llm()
     mensajes = [("system", _SISTEMA), ("human", prompt)]
     if reintento:
         mensajes.append(("human", reintento))
@@ -252,8 +247,8 @@ async def redactar_explicacion(d: DatosExplicacion) -> Explicacion:
         sources=chips,
     )
 
-    if not settings.GEMINI_API_KEY:
-        log.warning("Sin GEMINI_API_KEY: se usa la explicación determinista.")
+    if not hay_api_key():
+        log.warning("Sin API key del proveedor de IA: se usa la explicación determinista.")
         return determinista
 
     correccion = ""
@@ -276,7 +271,7 @@ async def redactar_explicacion(d: DatosExplicacion) -> Explicacion:
         if veredicto.ok:
             return Explicacion(
                 texto=texto,
-                modelo=settings.GEMINI_MODEL,
+                modelo=modelo_activo(),
                 guardrail_passed=True,
                 retry_count=intento,
                 prompt=prompt,
