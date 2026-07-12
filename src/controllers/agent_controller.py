@@ -20,6 +20,7 @@ from psycopg import Connection
 from psycopg.types.json import Jsonb
 
 from src.config.database import get_connection
+from src.controllers import catalog_controller
 from src.controllers.investor_controller import (
     _allocations_de,
     _datos_explicacion,
@@ -30,10 +31,13 @@ from src.models.agent import (
     AgentChatRequest,
     AgentChatResponse,
     ProviderInfo,
+    SimuladorRequest,
+    SimuladorResponse,
     SourceChip,
 )
 from src.models.auth import CurrentUser
 from src.models.investor import Investor, NivelRiesgo, PerfilRiesgo, RespuestaDetalle
+from src.services import simulator_ai
 from src.services.ai_agent import DatosExplicacion
 from src.services.agent_graph import (
     ContextoAgente,
@@ -328,27 +332,37 @@ def _guardar_turno(
     proposal_id: str,
     mensaje: str,
     estado: dict[str, Any],
+    thread_id: str | None = None,
+    platform: str = "api",
 ) -> None:
-    """Persiste el turno del usuario y el del asistente (evidencia + memoria)."""
+    """Persiste el turno del usuario y el del asistente (evidencia + memoria).
+
+    `thread_id` separa conversaciones que hablan de la MISMA sesión por canales
+    distintos: el chat de la app usa la sesión como hilo, y WhatsApp usa `wa:<teléfono>`.
+    Sin esa separación, lo que el usuario preguntó por WhatsApp reaparecería como
+    historial en la app (y al revés), mezclando dos conversaciones que él vive como
+    independientes. `platform` es lo que hace auditable de dónde vino cada turno.
+    """
+    hilo = thread_id or session_id
     conn.execute(
         """
         insert into public.llm_interactions
             (session_id, proposal_id, thread_id, role, content, platform)
-        values (%s, %s, %s, 'user', %s, 'api')
+        values (%s, %s, %s, 'user', %s, %s)
         """,
-        (session_id, proposal_id, session_id, mensaje),
+        (session_id, proposal_id, hilo, mensaje, platform),
     )
     conn.execute(
         """
         insert into public.llm_interactions
             (session_id, proposal_id, thread_id, role, content, model,
              guardrail_passed, retry_count, metadata, platform)
-        values (%s, %s, %s, 'assistant', %s, %s, %s, %s, %s, 'api')
+        values (%s, %s, %s, 'assistant', %s, %s, %s, %s, %s, %s)
         """,
         (
             session_id,
             proposal_id,
-            session_id,
+            hilo,
             estado["texto"],
             estado["modelo"],
             estado["guardrail_passed"],
@@ -360,6 +374,7 @@ def _guardar_turno(
                     "ruta": estado.get("ruta", "bancario"),
                 }
             ),
+            platform,
         ),
     )
 
@@ -414,4 +429,122 @@ async def chat(payload: AgentChatRequest, usuario: CurrentUser) -> AgentChatResp
         modelo=estado["modelo"],
         en_alcance=ruta != "rechazo",
         ruta=ruta,
+    )
+
+
+# ===========================================================================
+# La recomendación del simulador (el motor elige, la IA explica)
+# ===========================================================================
+
+
+def _ultima_sesion(conn: Connection, investor_id: str) -> str | None:
+    """La última sesión completada, solo para poder ARCHIVAR el turno. Puede no haber."""
+    fila = conn.execute(
+        """
+        select id::text as sid
+        from public.profiling_sessions
+        where investor_id = %s and completed_at is not null
+        order by created_at desc
+        limit 1
+        """,
+        (investor_id,),
+    ).fetchone()
+    return fila["sid"] if fila else None
+
+
+def _archivar_simulacion(
+    conn: Connection,
+    session_id: str | None,
+    investor_id: str,
+    pregunta: str,
+    rec: simulator_ai.Recomendacion,
+) -> None:
+    """Deja la recomendación en `llm_interactions` (misma evidencia que el chat).
+
+    El `thread_id` NO es la sesión sino `sim:<investor_id>`: así el simulador queda
+    auditable sin colarse en el historial del chat, que se relee filtrando por
+    `thread_id = session_id`.
+    """
+    conn.execute(
+        """
+        insert into public.llm_interactions
+            (session_id, thread_id, role, content, platform)
+        values (%s, %s, 'user', %s, 'api')
+        """,
+        (session_id, f"sim:{investor_id}", pregunta),
+    )
+    conn.execute(
+        """
+        insert into public.llm_interactions
+            (session_id, thread_id, role, content, model,
+             guardrail_passed, retry_count, metadata, platform)
+        values (%s, %s, 'assistant', %s, %s, %s, %s, %s, 'api')
+        """,
+        (
+            session_id,
+            f"sim:{investor_id}",
+            rec.texto,
+            rec.modelo,
+            rec.guardrail_passed,
+            rec.retry_count,
+            Jsonb({"sources": rec.sources, "guardrail_motivos": rec.motivos, "origen": "simulador"}),
+        ),
+    )
+
+
+async def recomendar_simulacion(
+    payload: SimuladorRequest, usuario: CurrentUser
+) -> SimuladorResponse:
+    """Recomendación de IA sobre la simulación que el usuario tiene en pantalla.
+
+    Las opciones se piden con el MISMO `listar_tasas` que sirve al simulador (y con
+    `todos_los_plazos`, porque el usuario puede haber cambiado de banco o de fondo): la
+    IA cita exactamente las cifras que él está viendo, no otras calculadas aparte.
+    """
+    catalogo = await catalog_controller.listar_tasas(
+        usuario.id, payload.monto, payload.plazo_dias, todos_los_plazos=True
+    )
+
+    por_code = {t.code: t for t in catalogo.tasas}
+    seleccionado = por_code.get(payload.seleccion_code) if payload.seleccion_code else None
+    if payload.seleccion_code and seleccionado is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"El producto {payload.seleccion_code} no está en el catálogo activo.",
+        )
+
+    sim = simulator_ai.Simulacion(
+        monto=payload.monto,
+        plazo_dias=payload.plazo_dias,
+        perfil=catalogo.perfil,
+        tasas=catalogo.tasas,
+        # La misma fila que el front tiene destacada: `listar_tasas` ya la marcó.
+        recomendado=next((t for t in catalogo.tasas if t.recomendado), None),
+        seleccionado=seleccionado,
+    )
+
+    rec = await simulator_ai.recomendar(sim, provider=payload.provider)
+
+    log.warning(
+        "[simulador] monto=%s plazo=%s seleccion=%s -> modelo=%s | guardrail=%s",
+        payload.monto,
+        payload.plazo_dias,
+        payload.seleccion_code,
+        rec.modelo,
+        rec.guardrail_passed,
+    )
+
+    pregunta = (
+        f"[simulador] monto={payload.monto} plazo_dias={payload.plazo_dias} "
+        f"seleccion={payload.seleccion_code or '-'}"
+    )
+    with get_connection() as conn:
+        _archivar_simulacion(conn, _ultima_sesion(conn, usuario.id), usuario.id, pregunta, rec)
+
+    return SimuladorResponse(
+        recomendado_code=sim.recomendado.code if sim.recomendado else None,
+        texto=rec.texto,
+        sources=[SourceChip(**c) for c in rec.sources],
+        guardrail_passed=rec.guardrail_passed,
+        modelo=rec.modelo,
     )
