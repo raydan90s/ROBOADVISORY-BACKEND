@@ -16,6 +16,7 @@ from src.models.investor import (
     CapitalUpdate,
     Investor,
     InvestorProfileCreate,
+    PerfilUpdate,
     PortfolioProposal,
     Pregunta,
     ProfilingBreakdown,
@@ -74,6 +75,22 @@ async def edit_allocation(
     # Solo el dueño, solo pending_review, solo productos elegibles para su perfil.
     # La propuesta editada sigue esperando la revisión del asesor (HU3 intacta).
     return await investor_controller.editar_asignacion(proposal_id, payload, usuario)
+
+
+@router.put(
+    "/sessions/{session_id}/profile",
+    response_model=ProfilingBreakdown,
+    summary="El inversionista corrige sus respuestas: se re-puntúa y vuelve a revisión",
+)
+async def edit_profile(
+    session_id: str,
+    payload: PerfilUpdate,
+    usuario: CurrentUser = Depends(require_role(Rol.INVESTOR)),
+) -> ProfilingBreakdown:
+    # Solo el dueño de la sesión. A diferencia de la mezcla, esto SÍ se puede aunque el
+    # asesor ya haya decidido: la propuesta se regenera y vuelve a `pending_review`, o
+    # sea, a su cola. La decisión anterior no se borra: queda en el registro.
+    return await investor_controller.editar_perfil(session_id, payload, usuario)
 
 
 @router.get(

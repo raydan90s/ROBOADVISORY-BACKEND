@@ -26,6 +26,7 @@ from src.models.investor import (
     InvestorProfileCreate,
     NivelRiesgo,
     PerfilRiesgo,
+    PerfilUpdate,
     Pregunta,
     OpcionPregunta,
     PortfolioProposal,
@@ -53,6 +54,105 @@ def _rules_version_activa(conn: Connection) -> dict[str, Any]:
             detail="No hay una rules_version activa. Corre el seed de schema.sql.",
         )
     return row
+
+
+def _puntuar_respuestas(
+    conn: Connection,
+    session_id: str,
+    rv: dict[str, Any],
+    respuestas: dict[str, str],
+) -> tuple[int, list[RespuestaDetalle]]:
+    """Guarda las respuestas de la sesión puntuándolas contra `scoring_rules`.
+
+    Es el corazón del perfilamiento y por eso lo comparten el cuestionario inicial y su
+    edición: si el puntaje se calculara en dos sitios, un día dejarían de coincidir.
+    """
+    detalles: list[RespuestaDetalle] = []
+    total = 0
+
+    for q_code, o_code in respuestas.items():
+        regla = conn.execute(
+            """
+            select q.id   as question_id, q.text  as pregunta_text,
+                   o.id   as option_id,   o.label as opcion_label,
+                   sr.points
+            from public.questions q
+            join public.question_options o on o.question_id = q.id
+            join public.scoring_rules sr   on sr.question_option_id = o.id
+            where q.code = %s and o.code = %s and sr.rules_version_id = %s
+            """,
+            (q_code, o_code, rv["id"]),
+        ).fetchone()
+
+        if not regla:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"Respuesta inválida: '{o_code}' no es una opción de '{q_code}' "
+                    f"en las reglas {rv['version_label']}."
+                ),
+            )
+
+        conn.execute(
+            """
+            insert into public.profiling_answers
+                (session_id, question_id, option_id, points_awarded)
+            values (%s, %s, %s, %s)
+            """,
+            (session_id, regla["question_id"], regla["option_id"], regla["points"]),
+        )
+
+        total += regla["points"]
+        detalles.append(
+            RespuestaDetalle(
+                pregunta_code=q_code,
+                pregunta_text=regla["pregunta_text"],
+                opcion_code=o_code,
+                opcion_label=regla["opcion_label"],
+                puntos=regla["points"],
+            )
+        )
+
+    return total, detalles
+
+
+def _perfil_de_puntaje(
+    conn: Connection, rules_version_id: str, total: int
+) -> dict[str, Any]:
+    """El umbral convierte el puntaje en perfil. Fuera de rango = cuestionario incompleto."""
+    perfil = conn.execute(
+        """
+        select rp.id, rp.code
+        from public.profile_thresholds pt
+        join public.risk_profiles rp on rp.id = pt.risk_profile_id
+        where pt.rules_version_id = %s
+          and %s between pt.min_score and pt.max_score
+        """,
+        (rules_version_id, total),
+    ).fetchone()
+
+    if not perfil:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"El puntaje {total} no cae en ningún rango de perfil. "
+                "¿Respondiste todas las preguntas?"
+            ),
+        )
+    return perfil
+
+
+def _puntaje_max(conn: Connection, rules_version_id: str) -> int | None:
+    """El denominador del '12 / 15'. Sale de las reglas, no de una constante."""
+    fila = conn.execute(
+        """
+        select max(max_score) as puntaje_max
+        from public.profile_thresholds
+        where rules_version_id = %s
+        """,
+        (rules_version_id,),
+    ).fetchone()
+    return fila["puntaje_max"] if fila else None
 
 
 # ===========================================================================
@@ -155,73 +255,11 @@ async def _perfilar(payload: InvestorProfileCreate, usuario: CurrentUser) -> Inv
             (investor["id"], rv["id"], payload.monto, nombre_subcuenta),
         ).fetchone()
 
-        detalles: list[RespuestaDetalle] = []
-        total = 0
-
-        for q_code, o_code in payload.respuestas.items():
-            regla = conn.execute(
-                """
-                select q.id   as question_id, q.text  as pregunta_text,
-                       o.id   as option_id,   o.label as opcion_label,
-                       sr.points
-                from public.questions q
-                join public.question_options o on o.question_id = q.id
-                join public.scoring_rules sr   on sr.question_option_id = o.id
-                where q.code = %s and o.code = %s and sr.rules_version_id = %s
-                """,
-                (q_code, o_code, rv["id"]),
-            ).fetchone()
-
-            if not regla:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail=(
-                        f"Respuesta inválida: '{o_code}' no es una opción de '{q_code}' "
-                        f"en las reglas {rv['version_label']}."
-                    ),
-                )
-
-            conn.execute(
-                """
-                insert into public.profiling_answers
-                    (session_id, question_id, option_id, points_awarded)
-                values (%s, %s, %s, %s)
-                """,
-                (session["id"], regla["question_id"], regla["option_id"], regla["points"]),
-            )
-
-            total += regla["points"]
-            detalles.append(
-                RespuestaDetalle(
-                    pregunta_code=q_code,
-                    pregunta_text=regla["pregunta_text"],
-                    opcion_code=o_code,
-                    opcion_label=regla["opcion_label"],
-                    puntos=regla["points"],
-                )
-            )
-
-        perfil = conn.execute(
-            """
-            select rp.id, rp.code
-            from public.profile_thresholds pt
-            join public.risk_profiles rp on rp.id = pt.risk_profile_id
-            where pt.rules_version_id = %s
-              and %s between pt.min_score and pt.max_score
-            """,
-            (rv["id"], total),
-        ).fetchone()
-
-        if not perfil:
-            # Pasa si el usuario contestó solo parte del cuestionario: el puntaje
-            # cae fuera de todos los rangos de profile_thresholds.
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=(
-                    f"El puntaje {total} no cae en ningún rango de perfil. "
-                    "¿Respondiste todas las preguntas?"
-                ),
-            )
+        total, detalles = _puntuar_respuestas(
+            conn, session["id"], rv, payload.respuestas
+        )
+        # Un puntaje fuera de todos los rangos = cuestionario a medias.
+        perfil = _perfil_de_puntaje(conn, rv["id"], total)
 
         conn.execute(
             """
@@ -232,15 +270,6 @@ async def _perfilar(payload: InvestorProfileCreate, usuario: CurrentUser) -> Inv
             (total, perfil["id"], session["id"]),
         )
 
-        maximo = conn.execute(
-            """
-            select max(max_score) as puntaje_max
-            from public.profile_thresholds
-            where rules_version_id = %s
-            """,
-            (rv["id"],),
-        ).fetchone()
-
         return Investor(
             investor_id=str(investor["id"]),
             session_id=str(session["id"]),
@@ -248,7 +277,7 @@ async def _perfilar(payload: InvestorProfileCreate, usuario: CurrentUser) -> Inv
             email=investor["email"],
             cedula_ruc=investor["cedula_ruc"],
             puntaje=total,
-            puntaje_max=maximo["puntaje_max"],
+            puntaje_max=_puntaje_max(conn, rv["id"]),
             perfil_riesgo=PerfilRiesgo(perfil["code"]),
             respuestas=detalles,
             monto=float(payload.monto),
@@ -742,24 +771,42 @@ async def get_portfolio_proposal(
                 explicacion=existente["explanation"],
             )
 
-        # --- Primera vez: materializa la plantilla del perfil como propuesta ---
-        plantilla = conn.execute(
-            """
-            select at.id, at.expected_risk
-            from public.allocation_templates at
-            join public.profiling_sessions s on s.rules_version_id = at.rules_version_id
-                                            and s.risk_profile_id  = at.risk_profile_id
-            where s.id = %s
-            """,
-            (investor.session_id,),
-        ).fetchone()
+        # Primera vez: materializa la plantilla del perfil como propuesta.
+        return await _materializar_propuesta(conn, investor)
 
-        if not plantilla:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"No hay allocation_template para el perfil {investor.perfil_riesgo.value}.",
-            )
 
+async def _materializar_propuesta(
+    conn: Connection, investor: Investor, existente_id: str | None = None
+) -> PortfolioProposal:
+    """Escribe la propuesta que le corresponde al perfil de la sesión, y la explica.
+
+    Con `existente_id` **reescribe** esa propuesta en vez de crear otra: es lo que pasa
+    cuando el cliente corrige su perfil y su plantilla ya no es la misma. No se inserta
+    una fila nueva porque `advisor_reviews`, `llm_interactions` y `audit_log` cuelgan de
+    este `proposal_id`: el historial tiene que seguir apuntando a la propuesta que
+    efectivamente existe.
+
+    Reescribirla la devuelve a `pending_review`, y `v_advisor_review_queue` (que es
+    exactamente ese estado) la vuelve a poner en la cola del asesor.
+    """
+    plantilla = conn.execute(
+        """
+        select at.id, at.expected_risk
+        from public.allocation_templates at
+        join public.profiling_sessions s on s.rules_version_id = at.rules_version_id
+                                        and s.risk_profile_id  = at.risk_profile_id
+        where s.id = %s
+        """,
+        (investor.session_id,),
+    ).fetchone()
+
+    if not plantilla:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"No hay allocation_template para el perfil {investor.perfil_riesgo.value}.",
+        )
+
+    if existente_id is None:
         # El monto se copia de la sesión a la propuesta: snapshot inmutable. Si el
         # cliente se vuelve a perfilar con otro monto, esta propuesta no cambia.
         proposal = conn.execute(
@@ -777,57 +824,80 @@ async def get_portfolio_proposal(
                 investor.session_id,
             ),
         ).fetchone()
-
-        # Los porcentajes se copian tal cual de la plantilla: el LLM no los toca.
-        # Los USD los calcula Postgres — es el número que después tiene que estar en el
-        # set permitido del guardarraíl, así que no puede nacer en Python.
-        conn.execute(
+    else:
+        # El monto NO se toca: sigue siendo el que el cliente repartió de su capital.
+        # Lo que cambia es la plantilla, y con ella los productos y el riesgo esperado.
+        proposal = conn.execute(
             """
-            insert into public.proposal_items (proposal_id, instrument_id, percentage, amount)
-            select p.id, ati.instrument_id, ati.percentage,
-                   round(p.total_amount * ati.percentage / 100.0, 2)
-            from public.allocation_template_items ati
-            cross join public.proposals p
-            where ati.template_id = %s and p.id = %s
+            update public.proposals
+            set template_id   = %s,
+                expected_risk = %s,
+                status        = 'pending_review',
+                explanation   = null
+            where id = %s
+            returning id, status, total_amount
             """,
-            (plantilla["id"], proposal["id"]),
-        )
-
-        allocations = _allocations_de(conn, proposal["id"])
-        riesgo = NivelRiesgo(plantilla["expected_risk"])
-        retorno = _retorno_ponderado(allocations)
-
-        explicacion = await redactar_explicacion(
-            _datos_explicacion(conn, investor, allocations, riesgo, proposal["total_amount"], retorno)
-        )
-        _guardar_interaccion(conn, investor.session_id, proposal["id"], explicacion)
-
+            (plantilla["id"], plantilla["expected_risk"], existente_id),
+        ).fetchone()
         conn.execute(
-            "update public.proposals set explanation = %s where id = %s",
-            (explicacion.texto, proposal["id"]),
-        )
-        conn.execute(
-            """
-            insert into public.audit_log (entity_type, entity_id, actor_id, action, metadata)
-            values ('proposal', %s, %s, 'created', %s)
-            """,
-            (proposal["id"], investor.investor_id, Jsonb({"puntaje": investor.puntaje})),
+            "delete from public.proposal_items where proposal_id = %s", (existente_id,)
         )
 
-        return PortfolioProposal(
-            proposal_id=str(proposal["id"]),
-            investor_id=investor.investor_id,
-            session_id=investor.session_id,
-            perfil_riesgo=investor.perfil_riesgo,
-            puntaje=investor.puntaje,
-            puntaje_max=investor.puntaje_max,
-            riesgo_esperado=riesgo,
-            estado=EstadoPropuesta(proposal["status"]),
-            monto_total=proposal["total_amount"],
-            allocations=allocations,
-            retorno_esperado_anual=retorno,
-            explicacion=explicacion.texto,
-        )
+    # Los porcentajes se copian tal cual de la plantilla: el LLM no los toca.
+    # Los USD los calcula Postgres — es el número que después tiene que estar en el
+    # set permitido del guardarraíl, así que no puede nacer en Python.
+    conn.execute(
+        """
+        insert into public.proposal_items (proposal_id, instrument_id, percentage, amount)
+        select p.id, ati.instrument_id, ati.percentage,
+               round(p.total_amount * ati.percentage / 100.0, 2)
+        from public.allocation_template_items ati
+        cross join public.proposals p
+        where ati.template_id = %s and p.id = %s
+        """,
+        (plantilla["id"], proposal["id"]),
+    )
+
+    allocations = _allocations_de(conn, proposal["id"])
+    riesgo = NivelRiesgo(plantilla["expected_risk"])
+    retorno = _retorno_ponderado(allocations)
+
+    explicacion = await redactar_explicacion(
+        _datos_explicacion(conn, investor, allocations, riesgo, proposal["total_amount"], retorno)
+    )
+    _guardar_interaccion(conn, investor.session_id, proposal["id"], explicacion)
+
+    conn.execute(
+        "update public.proposals set explanation = %s where id = %s",
+        (explicacion.texto, proposal["id"]),
+    )
+    conn.execute(
+        """
+        insert into public.audit_log (entity_type, entity_id, actor_id, action, metadata)
+        values ('proposal', %s, %s, %s, %s)
+        """,
+        (
+            proposal["id"],
+            investor.investor_id,
+            "created" if existente_id is None else "regenerated",
+            Jsonb({"puntaje": investor.puntaje, "perfil": investor.perfil_riesgo.value}),
+        ),
+    )
+
+    return PortfolioProposal(
+        proposal_id=str(proposal["id"]),
+        investor_id=investor.investor_id,
+        session_id=investor.session_id,
+        perfil_riesgo=investor.perfil_riesgo,
+        puntaje=investor.puntaje,
+        puntaje_max=investor.puntaje_max,
+        riesgo_esperado=riesgo,
+        estado=EstadoPropuesta(proposal["status"]),
+        monto_total=proposal["total_amount"],
+        allocations=allocations,
+        retorno_esperado_anual=retorno,
+        explicacion=explicacion.texto,
+    )
 
 
 # ===========================================================================
@@ -992,3 +1062,135 @@ async def editar_asignacion(
     # Fuera de la transacción (ya commiteada): la respuesta es la misma que da el GET,
     # así el front pinta exactamente lo que quedó guardado.
     return await get_portfolio_proposal(usuario.id, session_id)
+
+
+# ===========================================================================
+# Edición del perfil por el inversionista (reabre la revisión del asesor)
+# ===========================================================================
+
+
+async def editar_perfil(
+    session_id: str, payload: PerfilUpdate, usuario: CurrentUser
+) -> ProfilingBreakdown:
+    """El cliente corrige sus respuestas: se re-puntúa y la propuesta vuelve a la cola.
+
+    Editar el perfil no es lo mismo que editar la mezcla (`editar_asignacion`), y por eso
+    esto sí se permite aunque el asesor ya haya decidido: el cliente está diciendo que el
+    insumo con el que se decidió estaba mal. La decisión anterior no se borra —queda en
+    `advisor_reviews` y en el `audit_log`—, pero la propuesta se regenera con la plantilla
+    del perfil nuevo y vuelve a `pending_review`, es decir, a la cola del asesor.
+
+    Se re-puntúa contra las reglas **activas**, no contra las de la sesión original: el
+    cliente se está volviendo a perfilar, y perfilarse hoy usa las reglas de hoy. La
+    sesión queda anclada a esa versión, así que su desglose sigue siendo coherente.
+
+    El monto no se toca: es el que ya salió de su capital y el que quedó congelado en la
+    propuesta. Mover dinero entre subcuentas es otra cosa.
+    """
+    try:
+        session_id = str(UUID(session_id))
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"'session_id' no es un identificador válido: {session_id}",
+        ) from exc
+
+    with get_connection() as conn:
+        # `for update` serializa contra el asesor decidiendo sobre esta misma propuesta:
+        # o su decisión entra antes y la regeneración la revierte a pendiente, o entra
+        # después y choca con el 409 de `revisar_propuesta`. En ningún caso quedan una
+        # decisión y una propuesta que no se corresponden.
+        sesion = conn.execute(
+            """
+            select s.id, s.investor_id, s.amount, s.total_score,
+                   rp.code       as perfil_code,
+                   inv.full_name, inv.email, inv.cedula_ruc, inv.created_at
+            from public.profiling_sessions s
+            join public.profiles inv          on inv.id = s.investor_id
+            left join public.risk_profiles rp on rp.id = s.risk_profile_id
+            where s.id = %s
+            for update of s
+            """,
+            (session_id,),
+        ).fetchone()
+
+        if not sesion:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"No existe la sesión de perfilamiento {session_id}.",
+            )
+
+        if str(sesion["investor_id"]) != usuario.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Solo puedes editar tu propio perfil.",
+            )
+
+        rv = _rules_version_activa(conn)
+
+        # Las respuestas viejas se van enteras: el puntaje es la suma de las que quedan,
+        # y mezclar las dos tandas daría un total que no corresponde a ninguna.
+        conn.execute(
+            "delete from public.profiling_answers where session_id = %s", (session_id,)
+        )
+        total, detalles = _puntuar_respuestas(conn, session_id, rv, payload.respuestas)
+        perfil = _perfil_de_puntaje(conn, rv["id"], total)
+
+        conn.execute(
+            """
+            update public.profiling_sessions
+            set total_score      = %s,
+                risk_profile_id  = %s,
+                rules_version_id = %s,
+                completed_at     = now()
+            where id = %s
+            """,
+            (total, perfil["id"], rv["id"], session_id),
+        )
+
+        conn.execute(
+            """
+            insert into public.audit_log
+                (entity_type, entity_id, actor_id, action, platform, metadata)
+            values ('profiling_session', %s, %s, 'investor_edited_profile', 'mobile', %s)
+            """,
+            (
+                session_id,
+                usuario.id,
+                Jsonb(
+                    {
+                        "puntaje_anterior": sesion["total_score"],
+                        "puntaje_nuevo": total,
+                        "perfil_anterior": sesion["perfil_code"],
+                        "perfil_nuevo": perfil["code"],
+                        "rules_version": rv["version_label"],
+                    }
+                ),
+            ),
+        )
+
+        propuesta = conn.execute(
+            "select id from public.proposals where session_id = %s", (session_id,)
+        ).fetchone()
+
+        # Sin propuesta todavía (el cliente nunca la abrió) no hay nada que regenerar:
+        # el primer GET /portfolio la materializará ya con el perfil corregido.
+        if propuesta:
+            investor = Investor(
+                investor_id=str(sesion["investor_id"]),
+                session_id=session_id,
+                nombre=sesion["full_name"],
+                email=sesion["email"],
+                cedula_ruc=sesion["cedula_ruc"],
+                puntaje=total,
+                puntaje_max=_puntaje_max(conn, rv["id"]),
+                perfil_riesgo=PerfilRiesgo(perfil["code"]),
+                respuestas=detalles,
+                monto=float(sesion["amount"]) if sesion["amount"] is not None else None,
+                created_at=sesion["created_at"],
+            )
+            await _materializar_propuesta(conn, investor, str(propuesta["id"]))
+
+    # Ya commiteado: el desglose se lee de la vista, que es la misma fuente que pinta la
+    # pantalla. Devolverlo evita que el front tenga que adivinar cómo quedó el puntaje.
+    return await obtener_breakdown(usuario.id, session_id)

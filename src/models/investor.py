@@ -85,6 +85,21 @@ class InvestorProfileCreate(BaseModel):
     respuestas: dict[str, str] = Field(..., min_length=1)
 
 
+class PerfilUpdate(BaseModel):
+    """Body del PUT /api/investor/sessions/{session_id}/profile.
+
+    El cliente corrige las respuestas de un perfilamiento que ya hizo. Solo viajan las
+    respuestas: el monto NO se toca acá porque es el que ya repartió su capital y el que
+    quedó congelado en la propuesta — cambiarlo es mover dinero entre subcuentas, no
+    corregir un perfil.
+
+    Editar el perfil **reabre la revisión**: el puntaje se recalcula, la propuesta se
+    regenera con la plantilla del perfil nuevo y vuelve a `pending_review`.
+    """
+
+    respuestas: dict[str, str] = Field(..., min_length=1)
+
+
 class RespuestaDetalle(BaseModel):
     """Una respuesta con los puntos que aportó — permite explicarle al usuario el porqué."""
 
