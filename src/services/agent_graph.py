@@ -594,6 +594,10 @@ class AgentState(TypedDict, total=False):
     # Proveedor elegido en el front para ESTE turno (None = el default del .env).
     provider: str | None
 
+    # Señal explícita del botón "Recomendación de Mercados (IA)": si viene, el router
+    # NO clasifica el mensaje — fuerza la Ruta C con exactamente estos símbolos.
+    simbolos_forzados: list[str] | None
+
     # Ruta elegida por el router: "bancario" | "mixto" | "externo" | "rechazo".
     ruta: str
     # Cotizaciones de Alpha Vantage pedidas para este turno (vacío en Ruta A).
@@ -614,7 +618,14 @@ class AgentState(TypedDict, total=False):
 
 
 def router_node(state: AgentState) -> AgentState:
-    """Clasifica el mensaje en una de las 3 rutas (o rechazo). Ver el diagrama del módulo."""
+    """Clasifica el mensaje en una de las 3 rutas (o rechazo). Ver el diagrama del módulo.
+
+    Con `simbolos_forzados` (el botón "Recomendación de Mercados (IA)"), el router no
+    clasifica nada: la ruta es C por señal explícita del cliente, no por adivinar el
+    texto. Sigue pasando por el guardarraíl igual que cualquier otra ruta.
+    """
+    if state.get("simbolos_forzados"):
+        return {"ruta": RUTA_EXTERNO}
     return {"ruta": _clasificar_ruta(state["mensaje"])}
 
 
@@ -656,7 +667,8 @@ async def mercado_node(state: AgentState) -> AgentState:
     Contención: este nodo solo llama a `market_data` (lectura) y al LLM; no ejecuta
     ningún INSERT/UPDATE — ni aquí ni en ninguna tabla de `proposals`.
     """
-    cotizaciones = await market_data.obtener_cotizaciones(_simbolos_de(state["mensaje"]))
+    simbolos = state.get("simbolos_forzados") or _simbolos_de(state["mensaje"])
+    cotizaciones = await market_data.obtener_cotizaciones(simbolos)
     system = build_system_prompt_externo(cotizaciones)
     provider = state.get("provider")
     # El guardarraíl de esta ruta solo permite los números de Alpha Vantage: CERO
@@ -863,13 +875,16 @@ async def responder(
     mensaje: str,
     historial: list[tuple[str, str]] | None = None,
     provider: str | None = None,
+    simbolos_forzados: list[str] | None = None,
 ) -> AgentState:
     """Corre el grafo para un turno y devuelve el estado final.
 
     `contexto` es todo lo que el agente conoce del inversionista (de la base); `mensaje`
     la pregunta; `historial` los turnos previos (para continuidad); `provider` el modelo
     elegido en el front (None = el default del .env). El router decide adentro del
-    grafo si el turno usa `contexto`, Alpha Vantage, o ambos (ver el diagrama arriba).
+    grafo si el turno usa `contexto`, Alpha Vantage, o ambos (ver el diagrama arriba) —
+    salvo que `simbolos_forzados` venga con algo: ahí la Ruta C es obligatoria (botón
+    "Recomendación de Mercados (IA)"), sin pasar por el clasificador de texto.
     """
     estado: AgentState = {
         "mensaje": mensaje,
@@ -877,6 +892,7 @@ async def responder(
         "ctx": contexto_permitido_agente(contexto),  # override si la ruta es B/C
         "historial": historial or [],
         "provider": provider,
+        "simbolos_forzados": simbolos_forzados,
         "retry_count": 0,
     }
     final = await _GRAFO.ainvoke(estado)

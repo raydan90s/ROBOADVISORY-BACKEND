@@ -385,7 +385,13 @@ async def chat(payload: AgentChatRequest, usuario: CurrentUser) -> AgentChatResp
         historial = _cargar_historial(conn, session_id)
 
     # 2. Correr el grafo (fuera de la transacción: la llamada al LLM puede tardar).
-    estado = await responder(contexto, payload.mensaje, historial, provider=payload.provider)
+    estado = await responder(
+        contexto,
+        payload.mensaje,
+        historial,
+        provider=payload.provider,
+        simbolos_forzados=payload.symbols,
+    )
 
     # Prueba en el terminal de qué proveedor/modelo/ruta contestó este turno.
     log.warning(

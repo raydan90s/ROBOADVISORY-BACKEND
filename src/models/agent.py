@@ -22,6 +22,12 @@ class AgentChatRequest(BaseModel):
     # "anthropic"). None → el default del .env. Si no tiene key, cae a la plantilla.
     provider: str | None = None
 
+    # Señal explícita del botón "Recomendación de Mercados (IA)" del simulador: fuerza
+    # la Ruta C (100% Alpha Vantage, cero contexto del banco) para estos símbolos, sin
+    # depender de que el texto del mensaje contenga las palabras que el router
+    # reconoce. None → el router clasifica el mensaje como siempre (rutas A/B/C/rechazo).
+    symbols: list[str] | None = Field(None, max_length=5)
+
 
 class ProviderInfo(BaseModel):
     """Un proveedor del catálogo, para pintar el selector del front (sin keys)."""

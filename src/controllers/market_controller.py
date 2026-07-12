@@ -1,6 +1,11 @@
 """Orquesta el wrapper cacheado de Alpha Vantage (`services/market_data.py`)."""
 
-from src.models.market import MarketQuoteOut, MarketQuotesResponse
+from src.models.market import (
+    HistoricalPointOut,
+    MarketHistoryResponse,
+    MarketQuoteOut,
+    MarketQuotesResponse,
+)
 from src.services import market_data
 
 
@@ -17,4 +22,13 @@ async def obtener_cotizaciones(symbols: list[str]) -> MarketQuotesResponse:
             )
             for c in cotizaciones
         ]
+    )
+
+
+async def obtener_historico(symbol: str, dias: int) -> MarketHistoryResponse:
+    serie = await market_data.obtener_historico(symbol, dias)
+    return MarketHistoryResponse(
+        symbol=serie.symbol,
+        source=serie.source,
+        points=[HistoricalPointOut(date=p.date, close=p.close) for p in serie.points],
     )

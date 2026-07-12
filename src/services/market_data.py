@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
-from datetime import datetime, timezone
+import random
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 
 import httpx
 from cachetools import TTLCache
@@ -157,3 +158,140 @@ async def obtener_cotizaciones(symbols: list[str]) -> list[MarketQuote]:
             await asyncio.sleep(1.1)
         resultado.append(await obtener_cotizacion(symbol))
     return resultado
+
+
+# ===========================================================================
+# Series históricas (gráficos): TIME_SERIES_DAILY / FX_DAILY / DIGITAL_CURRENCY_DAILY
+# ===========================================================================
+
+# 1 hora, igual que las cotizaciones: el histórico diario no cambia intradía, así que
+# esta caché en la práctica evita re-pedir la serie completa cada vez que alguien abre
+# el gráfico — es la llamada más "cara" en payload de las tres funciones de Alpha
+# Vantage que usamos.
+_history_cache: TTLCache[str, "HistoricalSeries"] = TTLCache(maxsize=32, ttl=3600)
+
+_DIAS_DEFAULT = 30
+_DIAS_MIN, _DIAS_MAX = 5, 100
+
+
+@dataclass(frozen=True)
+class HistoricalPoint:
+    date: str  # "YYYY-MM-DD"
+    close: float
+
+
+@dataclass(frozen=True)
+class HistoricalSeries:
+    symbol: str
+    source: str  # "alpha_vantage" | "mock"
+    points: list[HistoricalPoint] = field(default_factory=list)
+
+
+# Qué función de series de tiempo de Alpha Vantage le corresponde a cada símbolo.
+# DIGITAL_CURRENCY_DAILY para cripto-a-fiat, FX_DAILY para forex/metales (mismo criterio
+# que CURRENCY_EXCHANGE_RATE en tiempo real), TIME_SERIES_DAILY para acciones/ETFs.
+_HISTORY_CONFIG: dict[str, dict[str, str]] = {
+    "BTCUSD": {"function": "DIGITAL_CURRENCY_DAILY", "symbol": "BTC", "market": "USD"},
+    "XAUUSD": {"function": "FX_DAILY", "from_symbol": "XAU", "to_symbol": "USD"},
+    "EURUSD": {"function": "FX_DAILY", "from_symbol": "EUR", "to_symbol": "USD"},
+    "SPY": {"function": "TIME_SERIES_DAILY", "symbol": "SPY"},
+    "JPN225": {"function": "TIME_SERIES_DAILY", "symbol": "JPN225"},
+}
+
+# La clave del cierre diario cambia de nombre según la función de Alpha Vantage (y
+# según la versión de su API para cripto). Se prueban todas en orden en vez de
+# hardcodear una sola, para no romper el parseo si la respuesta trae otra variante.
+_CLAVES_CIERRE = ("4. close", "4a. close (USD)", "4b. close (USD)")
+
+
+def _mock_historico(symbol: str, dias: int) -> HistoricalSeries:
+    """Una caminata aleatoria determinista (mismo símbolo → misma curva) alrededor del
+    precio mock del ticker, para que el gráfico nunca se quede vacío ni cambie de forma
+    entre una recarga y otra durante la demo."""
+    precio_base, _ = _MOCK.get(symbol, (100.0, 0.0))
+    rng = random.Random(symbol)  # seed determinista por símbolo, no por reloj
+
+    precios = [precio_base]
+    for _ in range(dias - 1):
+        variacion = rng.uniform(-0.015, 0.015)
+        precios.append(precios[-1] / (1 + variacion))
+    precios.reverse()  # el camino se generó hacia atrás desde "hoy"; se muestra cronológico
+
+    hoy = datetime.now(timezone.utc).date()
+    decimales = 4 if precio_base < 10 else 2
+    puntos = [
+        HistoricalPoint(
+            date=(hoy - timedelta(days=dias - 1 - i)).isoformat(),
+            close=round(precio, decimales),
+        )
+        for i, precio in enumerate(precios)
+    ]
+    return HistoricalSeries(symbol=symbol, source="mock", points=puntos)
+
+
+async def _pedir_historico_alpha_vantage(
+    client: httpx.AsyncClient, symbol: str, dias: int
+) -> HistoricalSeries | None:
+    cfg = _HISTORY_CONFIG.get(symbol, {"function": "TIME_SERIES_DAILY", "symbol": symbol})
+    params = {**cfg, "apikey": settings.ALPHA_VANTAGE_API_KEY}
+    if cfg["function"] != "DIGITAL_CURRENCY_DAILY":
+        params["outputsize"] = "compact"  # últimos 100 días — de sobra para el gráfico
+
+    try:
+        resp = await client.get(_BASE_URL, params=params, timeout=15.0)
+        resp.raise_for_status()
+        payload = resp.json()
+    except Exception as exc:
+        log.warning("Alpha Vantage (histórico) falló para %s: %s", symbol, exc)
+        return None
+
+    if _es_error_de_cuota(payload):
+        log.warning("Alpha Vantage (histórico): cuota agotada o símbolo inválido para %s: %s", symbol, payload)
+        return None
+
+    llave_serie = next((k for k in payload if k.startswith("Time Series")), None)
+    if llave_serie is None:
+        log.warning("Alpha Vantage (histórico): respuesta sin serie de tiempo para %s: %s", symbol, payload)
+        return None
+
+    serie = payload[llave_serie]
+    puntos: list[HistoricalPoint] = []
+    for fecha in sorted(serie)[-dias:]:
+        fila = serie[fecha]
+        cierre_raw = next((fila[c] for c in _CLAVES_CIERRE if c in fila), None)
+        if cierre_raw is None:
+            continue
+        try:
+            cierre = float(cierre_raw)
+        except ValueError:
+            continue
+        puntos.append(HistoricalPoint(date=fecha, close=round(cierre, 4 if cierre < 10 else 2)))
+
+    if not puntos:
+        log.warning("Alpha Vantage (histórico): serie vacía tras parsear %s", symbol)
+        return None
+    return HistoricalSeries(symbol=symbol, source="alpha_vantage", points=puntos)
+
+
+async def obtener_historico(symbol: str, dias: int = _DIAS_DEFAULT) -> HistoricalSeries:
+    """La serie diaria de un símbolo, cacheada 1 hora. Nunca lanza: si Alpha Vantage
+    falla, agotó la cuota, o el símbolo no tiene una función de historial conocida
+    (ej. JPN225 en el free tier), cae a una caminata simulada — el gráfico del front
+    nunca se queda en blanco."""
+    symbol = symbol.strip().upper()
+    dias = max(_DIAS_MIN, min(dias, _DIAS_MAX))
+    clave = f"{symbol}:{dias}"
+
+    if clave in _history_cache:
+        return _history_cache[clave]
+
+    serie: HistoricalSeries | None = None
+    if settings.ALPHA_VANTAGE_API_KEY:
+        async with httpx.AsyncClient() as client:
+            serie = await _pedir_historico_alpha_vantage(client, symbol, dias)
+
+    if serie is None:
+        serie = _mock_historico(symbol, dias)
+
+    _history_cache[clave] = serie
+    return serie

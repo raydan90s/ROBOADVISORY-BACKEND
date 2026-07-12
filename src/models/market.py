@@ -20,3 +20,16 @@ class MarketQuoteOut(BaseModel):
 
 class MarketQuotesResponse(BaseModel):
     quotes: list[MarketQuoteOut]
+
+
+class HistoricalPointOut(BaseModel):
+    date: str  # "YYYY-MM-DD"
+    close: float
+
+
+class MarketHistoryResponse(BaseModel):
+    """Serie diaria de un símbolo, para el gráfico del simulador de mercados."""
+
+    symbol: str
+    source: str  # "alpha_vantage" | "mock"
+    points: list[HistoricalPointOut]
