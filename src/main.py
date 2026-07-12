@@ -15,6 +15,7 @@ from src.routes.agent_routes import router as agent_router
 from src.routes.audit_routes import router as audit_router
 from src.routes.auth_routes import router as auth_router
 from src.routes.catalog_routes import router as catalog_router
+from src.routes.feed_routes import router as feed_router
 from src.routes.investor_routes import router as investor_router
 from src.routes.market_routes import router as market_router
 from src.routes.whatsapp_routes import router as whatsapp_router
@@ -53,6 +54,7 @@ app.include_router(catalog_router)
 app.include_router(agent_router)
 app.include_router(market_router)
 app.include_router(whatsapp_router)
+app.include_router(feed_router)
 
 
 @app.get("/health", tags=["health"])
