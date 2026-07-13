@@ -1,16 +1,24 @@
-# Robo-Advisory API
+# Brokeate — Backend (Robo-Advisory API)
 
-Backend del asesor financiero automatizado (hackathon — track Robo-Advisory
-Financiero). FastAPI + Postgres directo sobre Supabase + un agente conversacional
-sobre LangGraph (Gemini / OpenAI / Anthropic, intercambiable) + un wrapper cacheado
-de Alpha Vantage para mercados externos.
+Backend del asesor financiero automatizado (Hackathon de Agentes Financieros IA —
+Track 3: Robo-Advisory). FastAPI + Postgres directo sobre Supabase + un agente
+conversacional sobre LangGraph (Gemini / OpenAI / Anthropic, intercambiable) + un
+wrapper cacheado de Alpha Vantage para mercados externos y de GNews para el feed.
 
-El usuario responde un test de riesgo desde la app (Expo/React Native). El backend
-calcula su puntaje **en la base** (nunca en el cliente ni en el LLM), lo clasifica en
-un perfil de riesgo y arma una propuesta de portafolio con el catálogo del banco.
-Puede repartir su capital en varias **subcuentas** (una por objetivo), conversar con
-un asistente sobre sus datos o sobre mercados externos, y un asesor humano revisa
+El usuario responde un test de riesgo desde la app o la web. El backend calcula su
+puntaje **en la base** (nunca en el cliente ni en el LLM), lo clasifica en un perfil de
+riesgo y arma una propuesta de portafolio con el catálogo del banco. Puede repartir su
+capital en varias **subcuentas** (una por objetivo), conversar con un asistente sobre
+sus datos o sobre mercados externos (también por WhatsApp), y un asesor humano revisa
 cada propuesta antes de que sea definitiva.
+
+## Los tres repositorios
+
+| Repo | Qué es | Despliegue |
+|---|---|---|
+| **[BROKEATE-APP](https://github.com/raydan90s/BROKEATE-APP)** | App móvil (Expo / React Native). Es además el paraguas: trae este repo y el web como submódulos. | [APK](https://expo.dev/accounts/alatacompany/projects/RoboAdvisorApp/builds/3759fec8-8b58-4de2-bf78-8dfe21d00e53) |
+| **[BROKEATE-BACKEND](https://github.com/raydan90s/BROKEATE-BACKEND)** (este) | Esta API. | AWS |
+| **[BROKEATE-WEB](https://github.com/raydan90s/BROKEATE-WEB)** | Frontend web (Vite + React DOM). | [Vercel](https://brokeate-web.vercel.app) |
 
 ---
 
@@ -40,6 +48,9 @@ Copia `.env.example` a `.env` y llénalo:
 | `GEMINI_API_KEY` / `GEMINI_MODEL` | Google AI Studio. Ojo con la cuota por modelo: ver el comentario en [`settings.py`](src/config/settings.py) |
 | `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` | Opcionales; solo si `AI_PROVIDER` los usa |
 | `ALPHA_VANTAGE_API_KEY` | [alphavantage.co](https://www.alphavantage.co/support/#api-key) (free tier: 25 req/día). Sin key, el ticker y el chat de mercados sirven cotizaciones simuladas — nunca se rompen |
+| `GNEWS_API_KEY` | [gnews.io](https://gnews.io) (free tier: 100 req/día). Alimenta el feed de noticias, cacheado 1 h y con respaldo |
+| `TWILIO_AUTH_TOKEN`, `TWILIO_WEBHOOK_URL` | Bot de WhatsApp. El webhook es público (Twilio no manda JWT): lo que lo autentica es la firma `X-Twilio-Signature`, y se calcula sobre `TWILIO_WEBHOOK_URL`, que debe coincidir **carácter por carácter** con la URL de la consola de Twilio |
+| `SMTP_*` | Gmail, para verificar el correo del registro y resetear contraseñas. `SMTP_PASSWORD` es una *Contraseña de aplicación* de 16 caracteres, no la de la cuenta. Vacío + `APP_ENV=development` → el código no se envía, se imprime en el log |
 | `CORS_ORIGINS` | `*` mientras desarrollas; dominios reales en producción |
 
 Entramos a Postgres directo como el rol `postgres` (bypassea el RLS de
@@ -230,6 +241,22 @@ estimado por producto.
 `GET /api/audit` — el timeline completo (`v_audit_timeline`): quién hizo qué, cuándo
 y con qué versión de reglas. Alimenta la pantalla de auditoría del asesor.
 
+### 8. Feed de noticias
+
+`GET /api/feed?tema=` — noticias financieras por tema (`services/feed_service.py`,
+sobre gnews.io). Misma disciplina que el wrapper de mercados: caché de 1 hora y
+respaldo cuando la cuota gratuita (100 req/día) se agota, para que la pantalla nunca
+quede en blanco. Todos los usuarios ven el mismo feed: no hay dueño que validar.
+
+### 9. Bot de WhatsApp (Twilio)
+
+El inversionista vincula su número desde la app (`POST /api/whatsapp/link-code` genera
+un código de un solo uso) y luego conversa con el mismo agente por WhatsApp. El webhook
+(`POST /api/whatsapp/webhook`) es **público** — Twilio no manda JWT: lo que lo autentica
+es la firma `X-Twilio-Signature`, validada contra `TWILIO_AUTH_TOKEN` y la URL exacta de
+`TWILIO_WEBHOOK_URL`. El bot corre siempre sobre el proveedor de `WHATSAPP_AI_PROVIDER`
+(donde hay cuota), sin depender del selector del front.
+
 ---
 
 ## Endpoints
@@ -238,10 +265,16 @@ y con qué versión de reglas. Alimenta la pantalla de auditoría del asesor.
 |---|---|---|---|
 | `POST` | `/api/auth/register` | público | Alta de un inversionista (nunca crea asesores) |
 | `POST` | `/api/auth/login` | público | Devuelve el JWT |
+| `POST` | `/api/auth/verify-email` | público | Confirma el código enviado al correo |
+| `POST` | `/api/auth/resend-code` | público | Reenvía el código de verificación |
+| `POST` | `/api/auth/forgot-password` | público | Manda el código de reseteo |
+| `POST` | `/api/auth/reset-password` | público | Cambia la contraseña con ese código |
 | `GET` | `/api/auth/me` | autenticado | El usuario del token |
 | `GET` | `/api/investor/questions` | público | El cuestionario (preguntas + opciones) |
 | `POST` | `/api/investor/profile` | investor | Perfila (y opcionalmente crea una subcuenta) |
 | `POST` | `/api/investor/capital` | investor | Fija el capital total y devuelve el reparto |
+| `PUT` | `/api/investor/proposals/{id}/allocation` | investor | El inversionista arma su mezcla: agrega, quita o repondera fondos elegibles |
+| `PUT` | `/api/investor/sessions/{id}/profile` | investor | Corrige sus respuestas: se re-puntúa y vuelve a revisión |
 | `GET` | `/api/investor/{id}/subaccounts` | dueño/asesor | Subcuentas + capital repartido |
 | `GET` | `/api/investor/{id}/portfolio` | dueño/asesor | La propuesta (la genera la primera vez). `?session_id=` elige la subcuenta |
 | `GET` | `/api/investor/{id}/breakdown` | dueño/asesor | Desglose respuesta → puntos → umbral |
@@ -251,27 +284,35 @@ y con qué versión de reglas. Alimenta la pantalla de auditoría del asesor.
 | `POST` | `/api/advisor/proposals/{id}/review` | advisor | Aprueba / edita / rechaza |
 | `GET` | `/api/agent/providers` | autenticado | Proveedores de IA disponibles |
 | `POST` | `/api/agent/chat` | autenticado | Un turno del asistente (3 rutas, ver arriba) |
+| `POST` | `/api/agent/simulador` | autenticado | Recomendación sobre la simulación en pantalla: **el motor elige, la IA solo explica** |
 | `GET` | `/api/market/quotes` | autenticado | Cotizaciones externas cacheadas |
 | `GET` | `/api/market/history` | autenticado | Serie diaria de un símbolo (para gráficos), cacheada |
 | `GET` | `/api/catalog/rates` | autenticado | Comparador de tasas con elegibilidad |
+| `GET` | `/api/feed` | autenticado | Noticias financieras por tema (GNews, cacheadas 1 h, con respaldo) |
 | `GET` | `/api/audit` | advisor | Timeline de auditoría |
+| `POST` | `/api/whatsapp/webhook` | público (firmado) | Mensaje entrante de Twilio; lo autentica `X-Twilio-Signature`, no un JWT |
+| `POST` | `/api/whatsapp/link-code` | autenticado | Código de un solo uso para vincular el WhatsApp |
+| `GET` | `/api/whatsapp/status` | autenticado | ¿Esta cuenta tiene un WhatsApp vinculado? |
+| `DELETE` | `/api/whatsapp/link` | autenticado | Desvincula el WhatsApp |
 | `GET` | `/health` | público | Healthcheck (consulta real a la base) |
-
-> Nota: el front (`RoboAdvisorApp`) también llama a `POST /api/agent/simulador` y
-> `PUT /api/investor/proposals/{id}/allocation`, que **no existen todavía** en este
-> backend — quedaron en el trabajo de otra rama sin mergear. El Comparador/Simulador
-> del front fallará hasta que se implementen.
 
 ---
 
 ## Despliegue
 
-- **Backend (Render)**: blueprint en [`render.yaml`](render.yaml) — `pip install -r
-  requirements.txt` como build, `uvicorn src.main:app --host 0.0.0.0 --port $PORT`
-  como start, healthcheck en `/health`. Variables secretas a setear en el dashboard
-  (o vía API): `DATABASE_URL`, `JWT_SECRET`, `GEMINI_API_KEY`, `ALPHA_VANTAGE_API_KEY`,
-  `CORS_ORIGINS`. `autoDeploy` está en `yes` sobre la rama `MiguelsBackend`.
-- **Frontend (Vercel)**: ver el README de `RoboAdvisorApp`.
+**Backend → AWS.** `uvicorn src.main:app --host 0.0.0.0 --port $PORT`, con `pip install
+-r requirements.txt` como build y el healthcheck en `/health`. Todas las variables de
+entorno (`DATABASE_URL`, `JWT_SECRET`, las keys de IA, `ALPHA_VANTAGE_API_KEY`,
+`GNEWS_API_KEY`, `TWILIO_*`, `SMTP_*`, `CORS_ORIGINS`) se configuran **en el servidor**,
+nunca en el repo. En producción `CORS_ORIGINS` lista los dominios reales de la web y la
+app, no `*`.
+
+Los clientes ([app](https://github.com/raydan90s/BROKEATE-APP) y
+[web](https://github.com/raydan90s/BROKEATE-WEB)) apuntan a esa URL con
+`EXPO_PUBLIC_API_BASE_URL` / `VITE_API_BASE_URL`.
+
+> [`render.yaml`](render.yaml) quedó de un despliegue anterior en Render; sigue siendo
+> una referencia útil de qué variables hay que setear, pero **el deploy vivo es AWS**.
 
 ---
 
