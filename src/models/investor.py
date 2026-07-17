@@ -264,6 +264,16 @@ class PortfolioProposal(BaseModel):
     # Único campo que redacta el LLM.
     explicacion: str | None = None
 
+    # Quién firmó y cuándo. Nulos mientras `estado` es `pending_review` — no hay firma
+    # todavía — y también en propuestas rechazadas, donde no hay nada que respaldar.
+    #
+    # Viajan con la propuesta, y no solo con la orden, porque el cliente tiene derecho a
+    # saber quién respondió por su cartera ANTES de invertirla, no después: "una IA
+    # propuso y una persona respondió por ello" no sirve de nada si el nombre de la
+    # persona aparece recién en el comprobante.
+    advisor_nombre: str | None = None
+    firmada_en: datetime | None = None
+
 
 # ---------------------------------------------------------------------------
 # "¿Cómo se calculó?" (HU1, criterio 3)
