@@ -96,6 +96,21 @@ class RevisionPrevia(BaseModel):
     decided_at: datetime
 
 
+class RefutacionPrevia(BaseModel):
+    """Una refutación del inversionista: por qué devolvió a la cola lo ya firmado.
+
+    Sale del `audit_log` (action = 'investor_refuted'), no de `advisor_reviews`: refutar
+    no es una decisión del asesor, es el cliente contestándola. El asesor la necesita a
+    la vista para que su segunda decisión responda al reclamo y no lo repita.
+    """
+
+    comments: str | None = None
+    # Qué decisión estaba contestando ('approved' o 'edited').
+    estado_refutado: str | None = None
+    investor_nombre: str | None = None
+    refutada_en: datetime
+
+
 class PropuestaDetalle(BaseModel):
     """Lo que ve el asesor antes de decidir. Todo determinista salvo `explicacion`."""
 
@@ -126,6 +141,9 @@ class PropuestaDetalle(BaseModel):
     banderas: list[str] = Field(default_factory=list)
 
     revisiones: list[RevisionPrevia] = Field(default_factory=list)
+    # Las veces que el inversionista devolvió una decisión firmada. Intercaladas con
+    # `revisiones` por fecha, cuentan la conversación completa sobre esta cartera.
+    refutaciones: list[RefutacionPrevia] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

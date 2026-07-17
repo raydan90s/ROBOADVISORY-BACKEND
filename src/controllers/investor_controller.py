@@ -31,6 +31,8 @@ from src.models.investor import (
     OpcionPregunta,
     PortfolioProposal,
     ProfilingBreakdown,
+    RefutacionRequest,
+    RefutacionResultado,
     RespuestaDetalle,
     ResumenCapital,
     Subcuenta,
@@ -778,7 +780,14 @@ async def get_portfolio_proposal(
 
         if existente:
             allocations = _allocations_de(conn, existente["id"])
-            firma = _firma_de(conn, existente["id"])
+            # La firma solo se muestra si RESPALDA el estado actual: una propuesta que
+            # volvió a la cola (perfil corregido o decisión refutada) no tiene a nadie
+            # respondiendo por ella, aunque en advisor_reviews haya firmas viejas.
+            firma = (
+                _firma_de(conn, existente["id"])
+                if existente["status"] in ("approved", "edited")
+                else None
+            )
             return PortfolioProposal(
                 proposal_id=str(existente["id"]),
                 investor_id=investor.investor_id,
@@ -1087,6 +1096,136 @@ async def editar_asignacion(
     # Fuera de la transacción (ya commiteada): la respuesta es la misma que da el GET,
     # así el front pinta exactamente lo que quedó guardado.
     return await get_portfolio_proposal(usuario.id, session_id)
+
+
+# ===========================================================================
+# Refutación de una decisión firmada (el inversionista devuelve la propuesta)
+# ===========================================================================
+
+
+async def refutar_propuesta(
+    proposal_id: str, payload: RefutacionRequest, usuario: CurrentUser
+) -> RefutacionResultado:
+    """El cliente no está de acuerdo con lo que el asesor firmó y lo devuelve a la cola.
+
+    El asesor guía, pero la plata es del inversionista: una firma no puede obligarlo a
+    invertir en una mezcla que no lo convence. Refutar devuelve la propuesta a
+    `pending_review` — con eso reaparece en `v_advisor_review_queue` (la cola ES ese
+    estado) y, de paso, el cliente recupera `editar_asignacion` para proponer su propia
+    mezcla antes de que el asesor vuelva a decidir.
+
+    Lo que refutar NO hace:
+
+    - No borra la decisión del asesor: `advisor_reviews` es inmutable y la refutación
+      queda al lado, en `audit_log`, con el motivo. La conversación completa es auditable.
+    - No aplica sobre una propuesta ya invertida: si existe una orden, la plata ya salió
+      y lo que corresponde es re-perfilarse o abrir otra subcuenta, no reescribir la
+      historia del comprobante.
+    - No aplica sobre `pending_review` (no hay decisión que refutar) ni sobre `rejected`
+      (no hay firma: el asesor ya le dio la razón).
+
+    El comentario es obligatorio (lo valida `RefutacionRequest`): el asesor necesita
+    saber QUÉ no convenció para que su segunda decisión no repita la primera.
+    """
+    try:
+        proposal_id = str(UUID(proposal_id))
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"'proposal_id' no es un identificador válido: {proposal_id}",
+        ) from exc
+
+    with get_connection() as conn:
+        # `for update` serializa contra el asesor decidiendo y contra una orden entrando
+        # al mismo tiempo (`fn_valida_orden_firmada` toma el mismo candado): o la orden
+        # entra primero y acá se ve y se responde 409, o la refutación gana y la orden
+        # choca con el estado `pending_review`.
+        propuesta = conn.execute(
+            """
+            select p.id, p.status, s.investor_id
+            from public.proposals p
+            join public.profiling_sessions s on s.id = p.session_id
+            where p.id = %s
+            for update of p
+            """,
+            (proposal_id,),
+        ).fetchone()
+
+        if not propuesta:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"No existe la propuesta {proposal_id}.",
+            )
+
+        if str(propuesta["investor_id"]) != usuario.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Solo puedes refutar tu propia propuesta.",
+            )
+
+        estado_anterior = propuesta["status"]
+        if estado_anterior == EstadoPropuesta.PENDIENTE_REVISION.value:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "La propuesta sigue en revisión: no hay una decisión que refutar. "
+                    "Puedes editar tu mezcla directamente mientras esperas al asesor."
+                ),
+            )
+        if estado_anterior == EstadoPropuesta.RECHAZADA.value:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "La propuesta fue rechazada por el asesor: no hay una firma que "
+                    "refutar. Corrige tu perfil para generar una propuesta nueva."
+                ),
+            )
+
+        invertida = conn.execute(
+            "select 1 from public.investment_orders where proposal_id = %s limit 1",
+            (proposal_id,),
+        ).fetchone()
+        if invertida:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "Esta propuesta ya se invirtió: la orden cursada no se deshace "
+                    "refutando. Para cambiar de rumbo, corrige tu perfil o crea una "
+                    "subcuenta nueva."
+                ),
+            )
+
+        conn.execute(
+            "update public.proposals set status = 'pending_review' where id = %s",
+            (proposal_id,),
+        )
+
+        refutacion = conn.execute(
+            """
+            insert into public.audit_log
+                (entity_type, entity_id, actor_id, action, platform, metadata)
+            values ('proposal', %s, %s, 'investor_refuted', 'mobile', %s)
+            returning created_at
+            """,
+            (
+                proposal_id,
+                usuario.id,
+                Jsonb(
+                    {
+                        "comments": payload.comments,
+                        "estado_refutado": estado_anterior,
+                    }
+                ),
+            ),
+        ).fetchone()
+
+        return RefutacionResultado(
+            proposal_id=proposal_id,
+            estado=EstadoPropuesta.PENDIENTE_REVISION,
+            estado_anterior=EstadoPropuesta(estado_anterior),
+            comments=payload.comments,
+            refutada_en=refutacion["created_at"],
+        )
 
 
 # ===========================================================================

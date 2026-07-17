@@ -23,6 +23,7 @@ from src.models.advisor import (
     EventoAuditoria,
     LineaPropuesta,
     PropuestaDetalle,
+    RefutacionPrevia,
     RevisionPrevia,
     RevisionRequest,
     RevisionResultado,
@@ -205,6 +206,31 @@ def _revisiones_de(conn: Connection, proposal_id: str) -> list[RevisionPrevia]:
     return [RevisionPrevia(**f) for f in filas]
 
 
+def _refutaciones_de(conn: Connection, proposal_id: str) -> list[RefutacionPrevia]:
+    """Las veces que el inversionista devolvió una decisión firmada, con su motivo.
+
+    Viven en `audit_log` (action = 'investor_refuted'), no en `advisor_reviews`: refutar
+    no es una decisión del asesor, es el cliente contestándola. Se sirven acá para que
+    la segunda decisión del asesor responda al reclamo en vez de repetir la primera.
+    """
+    filas = conn.execute(
+        """
+        select al.metadata ->> 'comments'        as comments,
+               al.metadata ->> 'estado_refutado' as estado_refutado,
+               inv.full_name                     as investor_nombre,
+               al.created_at                     as refutada_en
+        from public.audit_log al
+        left join public.profiles inv on inv.id = al.actor_id
+        where al.entity_type = 'proposal'
+          and al.entity_id   = %s
+          and al.action      = 'investor_refuted'
+        order by al.created_at desc
+        """,
+        (proposal_id,),
+    ).fetchall()
+    return [RefutacionPrevia(**f) for f in filas]
+
+
 async def obtener_detalle(proposal_id: str) -> PropuestaDetalle:
     """La pantalla de revisión completa: cabecera + líneas + banderas + historial."""
     proposal_id = _uuid_valido(proposal_id, "proposal_id")
@@ -218,6 +244,7 @@ async def obtener_detalle(proposal_id: str) -> PropuestaDetalle:
             allocations=lineas,
             banderas=_banderas(cabecera, lineas),
             revisiones=_revisiones_de(conn, proposal_id),
+            refutaciones=_refutaciones_de(conn, proposal_id),
         )
 
 
