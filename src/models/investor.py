@@ -242,6 +242,33 @@ class AsignacionUpdate(BaseModel):
         return self
 
 
+class RefutacionRequest(BaseModel):
+    """Body del POST /api/investor/proposals/{id}/refute.
+
+    El comentario es obligatorio por la misma razón que lo es al rechazar el asesor:
+    una refutación sin motivo no le dice al otro lado qué corregir. Es el inversionista
+    diciendo "no estoy de acuerdo con lo que firmaste, y esto es lo que no me convence".
+    """
+
+    comments: str = Field(..., max_length=2000)
+
+    @model_validator(mode="after")
+    def _con_motivo(self) -> "RefutacionRequest":
+        if not self.comments.strip():
+            raise ValueError("Al refutar una propuesta, 'comments' es obligatorio.")
+        return self
+
+
+class RefutacionResultado(BaseModel):
+    """Qué pasó al refutar: la propuesta vuelve a la cola del asesor."""
+
+    proposal_id: str
+    estado: EstadoPropuesta
+    estado_anterior: EstadoPropuesta
+    comments: str
+    refutada_en: datetime
+
+
 class PortfolioProposal(BaseModel):
     """Respuesta del GET /api/investor/{id}/portfolio."""
 

@@ -20,6 +20,8 @@ from src.models.investor import (
     PortfolioProposal,
     Pregunta,
     ProfilingBreakdown,
+    RefutacionRequest,
+    RefutacionResultado,
     ResumenCapital,
 )
 
@@ -75,6 +77,22 @@ async def edit_allocation(
     # Solo el dueño, solo pending_review, solo productos elegibles para su perfil.
     # La propuesta editada sigue esperando la revisión del asesor (HU3 intacta).
     return await investor_controller.editar_asignacion(proposal_id, payload, usuario)
+
+
+@router.post(
+    "/proposals/{proposal_id}/refute",
+    response_model=RefutacionResultado,
+    summary="El inversionista refuta la decisión firmada: la propuesta vuelve a la cola",
+)
+async def refute_proposal(
+    proposal_id: str,
+    payload: RefutacionRequest,
+    usuario: CurrentUser = Depends(require_role(Rol.INVESTOR)),
+) -> RefutacionResultado:
+    # Solo el dueño, solo sobre 'approved'/'edited' y solo si aún no hay una orden
+    # cursada. La decisión del asesor no se borra: la refutación queda al lado, en el
+    # registro de auditoría, y la propuesta reaparece en la cola del asesor.
+    return await investor_controller.refutar_propuesta(proposal_id, payload, usuario)
 
 
 @router.put(
