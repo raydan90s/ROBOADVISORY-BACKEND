@@ -5,12 +5,16 @@ la cola del asesor y aprobar su propia propuesta. Se ejercita la app real (no un
 guardia) porque lo que se quiere probar es el cableado, no la función suelta.
 """
 
-import uuid
 from collections.abc import Iterator
 
 import pytest
 from fastapi.testclient import TestClient
-from tests.ayudas_auth import cabeceras_de, codigo_pendiente, registrar_verificado
+from tests.ayudas_auth import (
+    cabeceras_de,
+    codigo_pendiente,
+    correo_desechable,
+    registrar_verificado,
+)
 
 from src.config.database import fetch_one, get_connection
 from src.main import app
@@ -88,7 +92,7 @@ def test_el_rol_no_es_negociable_desde_el_cliente(cuenta_desechable: list[str]) 
     el correo todavía no está verificado): se lee en el token que sale de /verify-email,
     que es donde de verdad importa — es el que firma el backend.
     """
-    email = f"zz-rol-{uuid.uuid4().hex[:8]}@test.local"
+    email = correo_desechable("rol")
     r = CLIENTE.post(
         "/api/auth/register",
         json={"nombre": "ZZ Rol", "email": email, "password": "demo1234", "role": "advisor"},
@@ -115,7 +119,7 @@ def test_sin_verificar_el_correo_no_se_entra(cuenta_desechable: list[str]) -> No
     Sin este test, `email_verified_at` sería una columna decorativa: el registro mandaría
     un código que nadie estaría obligado a leer.
     """
-    email = f"zz-noverif-{uuid.uuid4().hex[:8]}@test.local"
+    email = correo_desechable("noverif")
     r = CLIENTE.post(
         "/api/auth/register",
         json={"nombre": "ZZ Sin Verificar", "email": email, "password": "demo1234"},
@@ -141,7 +145,7 @@ def test_sin_verificar_el_correo_no_se_entra(cuenta_desechable: list[str]) -> No
 
 def test_un_codigo_equivocado_no_verifica_nada(cuenta_desechable: list[str]) -> None:
     """El código es un secreto, no un formulario: adivinarlo no abre la cuenta."""
-    email = f"zz-malcodigo-{uuid.uuid4().hex[:8]}@test.local"
+    email = correo_desechable("malcodigo")
     CLIENTE.post(
         "/api/auth/register",
         json={"nombre": "ZZ Mal Código", "email": email, "password": "demo1234"},

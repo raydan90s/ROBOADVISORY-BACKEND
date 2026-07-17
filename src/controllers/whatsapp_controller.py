@@ -63,7 +63,7 @@ _PALABRAS_AYUDA = {"ayuda", "help", "menu", "menú", "hola", "start", "/start"}
 # ===========================================================================
 
 BIENVENIDA = (
-    "👋 Soy el asistente de tu Brokeate.\n\n"
+    "👋 Soy Broki, tu asistente en Brokeate.\n\n"
     "Para hablar de TU cuenta necesito saber que este número es tuyo. En la app, entra "
     "a *Perfil → Vincular WhatsApp*, copia el código de seis dígitos y escríbeme:\n\n"
     "*VINCULAR 123456*\n\n"

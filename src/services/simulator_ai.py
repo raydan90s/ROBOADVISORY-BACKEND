@@ -233,9 +233,9 @@ def recomendacion_determinista(sim: Simulacion) -> str:
 # El LLM
 # ===========================================================================
 
-_SISTEMA = """Eres el asistente de un simulador de inversiones de un banco ecuatoriano.
-El MOTOR DE REGLAS del banco YA calculó cada cifra y YA eligió la opción recomendada. Tu
-único trabajo es EXPLICAR esa recomendación en español claro.
+_SISTEMA = """Te llamas Broki, el asistente de Brokeate, y este turno es el simulador de
+inversiones de un banco ecuatoriano. El MOTOR DE REGLAS del banco YA calculó cada cifra y YA
+eligió la opción recomendada. Tu único trabajo es EXPLICAR esa recomendación en español claro.
 
 REGLAS ABSOLUTAS (si rompes una, tu respuesta se descarta):
 1. FUENTE DE VERDAD = los DATOS. NO inventes ni recalcules ningún número: copia las

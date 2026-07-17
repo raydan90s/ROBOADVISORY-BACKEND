@@ -62,7 +62,7 @@ class Settings(BaseSettings):
     # La URL EXACTA que Twilio tiene configurada como webhook — entra en la firma, así
     # que si acá dice http y en Twilio https, toda firma se rechaza. Debe ser la misma
     # cadena, carácter por carácter, que aparece en la consola de Twilio.
-    TWILIO_WEBHOOK_URL: str = "https://hackaton.api.alata-ec.com/api/whatsapp/webhook"
+    TWILIO_WEBHOOK_URL: str = ""
     # Escape hatch SOLO para probar el webhook con curl/ngrok en local. En producción
     # tiene que quedar en true: es la única puerta del bot.
     TWILIO_VALIDAR_FIRMA: bool = True

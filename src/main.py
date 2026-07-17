@@ -18,6 +18,9 @@ from src.routes.catalog_routes import router as catalog_router
 from src.routes.feed_routes import router as feed_router
 from src.routes.investor_routes import router as investor_router
 from src.routes.market_routes import router as market_router
+from src.routes.order_routes import advisor_router as order_advisor_router
+from src.routes.order_routes import catalog_router as convenios_router
+from src.routes.order_routes import router as order_router
 from src.routes.whatsapp_routes import router as whatsapp_router
 
 
@@ -55,6 +58,14 @@ app.include_router(agent_router)
 app.include_router(market_router)
 app.include_router(whatsapp_router)
 app.include_router(feed_router)
+
+# Las órdenes de inversión (fase 6). Van en tres routers porque son tres audiencias
+# distintas —el que invierte, el que quiere saber con quién trabajamos, y el asesor— y
+# cada una cuelga del prefijo que ya le corresponde, en vez de inventar un /api/orders
+# que obligaría al front a aprenderse una cuarta base.
+app.include_router(order_router)
+app.include_router(convenios_router)
+app.include_router(order_advisor_router)
 
 
 @app.get("/health", tags=["health"])

@@ -438,9 +438,17 @@ async def chat(payload: AgentChatRequest, usuario: CurrentUser) -> AgentChatResp
         estado.get("ruta"),
     )
 
-    # 3. Guardar los dos turnos.
+    # 3. Guardar los dos turnos. El canal solo etiqueta la evidencia: 'voz' cuando la
+    #    pregunta se dictó por micrófono, 'api' cuando se escribió (el default histórico).
     with get_connection() as conn:
-        _guardar_turno(conn, session_id, proposal_id, payload.mensaje, estado)
+        _guardar_turno(
+            conn,
+            session_id,
+            proposal_id,
+            payload.mensaje,
+            estado,
+            platform=payload.canal or "api",
+        )
 
     ruta = estado.get("ruta", "bancario")
     return AgentChatResponse(
