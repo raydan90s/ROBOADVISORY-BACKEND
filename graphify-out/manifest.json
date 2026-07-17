@@ -1,0 +1,342 @@
+{
+  ".vscode/settings.json": {
+    "mtime": 1783813200.74547,
+    "ast_hash": "0930c54e0e3a7d8fdb63c2b73aa928f4",
+    "semantic_hash": "0930c54e0e3a7d8fdb63c2b73aa928f4"
+  },
+  "migrations/002_subcuentas.sql": {
+    "mtime": 1783813200.7464702,
+    "ast_hash": "5e57c61736d425a5f7b6d9358d0ff304",
+    "semantic_hash": "5e57c61736d425a5f7b6d9358d0ff304"
+  },
+  "migrations/003_whatsapp.sql": {
+    "mtime": 1783819042.2802377,
+    "ast_hash": "e92b842eff6c751e99f2114f03ce239c",
+    "semantic_hash": "e92b842eff6c751e99f2114f03ce239c"
+  },
+  "migrations/004_verificacion_correo.sql": {
+    "mtime": 1783890217.4142282,
+    "ast_hash": "5d4fafea1fee43c81e407d337b9e4165",
+    "semantic_hash": "5d4fafea1fee43c81e407d337b9e4165"
+  },
+  "schema.sql": {
+    "mtime": 1783798103.424865,
+    "ast_hash": "f1bc2c7fea5014dce08e3997897b6e5d",
+    "semantic_hash": "f1bc2c7fea5014dce08e3997897b6e5d"
+  },
+  "seed.sql": {
+    "mtime": 1783796061.8043215,
+    "ast_hash": "28b48ed1c999c62a2f63d7e5196bc5ad",
+    "semantic_hash": "28b48ed1c999c62a2f63d7e5196bc5ad"
+  },
+  "src/__init__.py": {
+    "mtime": 1783790396.105394,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "src/config/__init__.py": {
+    "mtime": 1783790396.1058936,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "src/config/database.py": {
+    "mtime": 1783793534.172704,
+    "ast_hash": "af64a5abe6c0e4d0464103c050a5f5b2",
+    "semantic_hash": "af64a5abe6c0e4d0464103c050a5f5b2"
+  },
+  "src/config/settings.py": {
+    "mtime": 1783899326.680591,
+    "ast_hash": "5280ffb93f7d5c3a5710d2d931c172ae",
+    "semantic_hash": "5280ffb93f7d5c3a5710d2d931c172ae"
+  },
+  "src/controllers/__init__.py": {
+    "mtime": 1783790396.1068995,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "src/controllers/advisor_controller.py": {
+    "mtime": 1783813200.748971,
+    "ast_hash": "c98b58cd5e8c6407854268ca691cf9eb",
+    "semantic_hash": "c98b58cd5e8c6407854268ca691cf9eb"
+  },
+  "src/controllers/agent_controller.py": {
+    "mtime": 1783891995.1096761,
+    "ast_hash": "e83556b3ec9248a6c08ad936d6519918",
+    "semantic_hash": "e83556b3ec9248a6c08ad936d6519918"
+  },
+  "src/controllers/auth_controller.py": {
+    "mtime": 1783891009.0087478,
+    "ast_hash": "f5bb67f814265f301bd4a9dc86b7a01e",
+    "semantic_hash": "f5bb67f814265f301bd4a9dc86b7a01e"
+  },
+  "src/controllers/catalog_controller.py": {
+    "mtime": 1783816429.069426,
+    "ast_hash": "419f86bbeb783c6f165ac7da9ad9d772",
+    "semantic_hash": "419f86bbeb783c6f165ac7da9ad9d772"
+  },
+  "src/controllers/investor_controller.py": {
+    "mtime": 1783826495.523021,
+    "ast_hash": "7abd99490f9885aff6c31caadbc3c123",
+    "semantic_hash": "7abd99490f9885aff6c31caadbc3c123"
+  },
+  "src/controllers/market_controller.py": {
+    "mtime": 1783823193.2873971,
+    "ast_hash": "ad4a3cc2b95f7e60feee72089830ad22",
+    "semantic_hash": "ad4a3cc2b95f7e60feee72089830ad22"
+  },
+  "src/controllers/whatsapp_controller.py": {
+    "mtime": 1783895402.3887477,
+    "ast_hash": "06216c53d34e228ae088be5b699cc93c",
+    "semantic_hash": "06216c53d34e228ae088be5b699cc93c"
+  },
+  "src/dependencies/__init__.py": {
+    "mtime": 1783796788.555653,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "src/dependencies/auth.py": {
+    "mtime": 1783799526.422082,
+    "ast_hash": "f0eb7de23c78142c62cd6712fff3134c",
+    "semantic_hash": "f0eb7de23c78142c62cd6712fff3134c"
+  },
+  "src/main.py": {
+    "mtime": 1783891995.111676,
+    "ast_hash": "9885e41fd8bdefadfc9bf0a7a59fcd04",
+    "semantic_hash": "9885e41fd8bdefadfc9bf0a7a59fcd04"
+  },
+  "src/models/__init__.py": {
+    "mtime": 1783790396.1058936,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "src/models/advisor.py": {
+    "mtime": 1783813200.7519698,
+    "ast_hash": "6c2b9946a88b1fb4375bc2d60c605b0b",
+    "semantic_hash": "6c2b9946a88b1fb4375bc2d60c605b0b"
+  },
+  "src/models/agent.py": {
+    "mtime": 1783824039.9377534,
+    "ast_hash": "4d84892f474961b511d0e7f9bafe5e66",
+    "semantic_hash": "4d84892f474961b511d0e7f9bafe5e66"
+  },
+  "src/models/auth.py": {
+    "mtime": 1783890317.6066904,
+    "ast_hash": "73938beb22246252e4ff0663e0e4bb55",
+    "semantic_hash": "73938beb22246252e4ff0663e0e4bb55"
+  },
+  "src/models/catalog.py": {
+    "mtime": 1783816429.070927,
+    "ast_hash": "e7e8a84d355aed5987802d045b89dc8f",
+    "semantic_hash": "e7e8a84d355aed5987802d045b89dc8f"
+  },
+  "src/models/feed.py": {
+    "mtime": 1783891995.1121752,
+    "ast_hash": "e76eced9b89ea88b9bbee803fea3fcb0",
+    "semantic_hash": "e76eced9b89ea88b9bbee803fea3fcb0"
+  },
+  "src/models/investor.py": {
+    "mtime": 1783826389.7876506,
+    "ast_hash": "3e8cfb5053b2d1234055bc2cf830b144",
+    "semantic_hash": "3e8cfb5053b2d1234055bc2cf830b144"
+  },
+  "src/models/market.py": {
+    "mtime": 1783823193.2898958,
+    "ast_hash": "dad48db3a5b272c2166fe82048c25446",
+    "semantic_hash": "dad48db3a5b272c2166fe82048c25446"
+  },
+  "src/models/whatsapp.py": {
+    "mtime": 1783819103.0181227,
+    "ast_hash": "17b954cf9642708f40dc9ac0b77ca5be",
+    "semantic_hash": "17b954cf9642708f40dc9ac0b77ca5be"
+  },
+  "src/routes/__init__.py": {
+    "mtime": 1783790396.107407,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "src/routes/advisor_routes.py": {
+    "mtime": 1783797652.1837564,
+    "ast_hash": "b7f96e230c1572fc34ddf3ec16391314",
+    "semantic_hash": "b7f96e230c1572fc34ddf3ec16391314"
+  },
+  "src/routes/agent_routes.py": {
+    "mtime": 1783816429.0714276,
+    "ast_hash": "72f49bc873f7a9441fb893d6af95b245",
+    "semantic_hash": "72f49bc873f7a9441fb893d6af95b245"
+  },
+  "src/routes/audit_routes.py": {
+    "mtime": 1783797658.7151191,
+    "ast_hash": "016011280b6b3eb34d4e98b1afa46049",
+    "semantic_hash": "016011280b6b3eb34d4e98b1afa46049"
+  },
+  "src/routes/auth_routes.py": {
+    "mtime": 1783890451.333583,
+    "ast_hash": "8ba09784168350fa002b3b83dc63bb18",
+    "semantic_hash": "8ba09784168350fa002b3b83dc63bb18"
+  },
+  "src/routes/catalog_routes.py": {
+    "mtime": 1783816429.0724266,
+    "ast_hash": "53d1fc2096a49ad771e066eeaab4748f",
+    "semantic_hash": "53d1fc2096a49ad771e066eeaab4748f"
+  },
+  "src/routes/feed_routes.py": {
+    "mtime": 1783891995.112682,
+    "ast_hash": "fbba3c553ea16baf5b03d2552472debf",
+    "semantic_hash": "fbba3c553ea16baf5b03d2552472debf"
+  },
+  "src/routes/investor_routes.py": {
+    "mtime": 1783826507.2626138,
+    "ast_hash": "e7bbcded966361af4cc1216d7c264fde",
+    "semantic_hash": "e7bbcded966361af4cc1216d7c264fde"
+  },
+  "src/routes/market_routes.py": {
+    "mtime": 1783823193.2903967,
+    "ast_hash": "217da5fc6e78b7fd3e27f20a2b3fb40b",
+    "semantic_hash": "217da5fc6e78b7fd3e27f20a2b3fb40b"
+  },
+  "src/routes/whatsapp_routes.py": {
+    "mtime": 1783819230.6036296,
+    "ast_hash": "2b192df0ac0d87eafc08d0318a0efee1",
+    "semantic_hash": "2b192df0ac0d87eafc08d0318a0efee1"
+  },
+  "src/services/__init__.py": {
+    "mtime": 1783790396.1079051,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "src/services/agent_graph.py": {
+    "mtime": 1783896395.1522136,
+    "ast_hash": "735362d6e9ac572f4da09948a27ce9eb",
+    "semantic_hash": "735362d6e9ac572f4da09948a27ce9eb"
+  },
+  "src/services/ai_agent.py": {
+    "mtime": 1783823515.0302207,
+    "ast_hash": "49af53157769c89a5ad1c81eae982936",
+    "semantic_hash": "49af53157769c89a5ad1c81eae982936"
+  },
+  "src/services/auth_service.py": {
+    "mtime": 1783796765.7501657,
+    "ast_hash": "9090cc2bff6dac79e814ae31b07e0b0e",
+    "semantic_hash": "9090cc2bff6dac79e814ae31b07e0b0e"
+  },
+  "src/services/feed_service.py": {
+    "mtime": 1783891995.1146894,
+    "ast_hash": "8f4f5b4e55d77f582e08635dfa2e71f7",
+    "semantic_hash": "8f4f5b4e55d77f582e08635dfa2e71f7"
+  },
+  "src/services/guardrails.py": {
+    "mtime": 1783891995.1156878,
+    "ast_hash": "1562a152ec7dce72150beeab53f0ec52",
+    "semantic_hash": "1562a152ec7dce72150beeab53f0ec52"
+  },
+  "src/services/llm_provider.py": {
+    "mtime": 1783893300.327101,
+    "ast_hash": "67db1d52092143679b618fe63c002755",
+    "semantic_hash": "67db1d52092143679b618fe63c002755"
+  },
+  "src/services/mailer.py": {
+    "mtime": 1783890294.2936049,
+    "ast_hash": "6e39e18f654c2cab12ff1ed045b3e049",
+    "semantic_hash": "6e39e18f654c2cab12ff1ed045b3e049"
+  },
+  "src/services/market_data.py": {
+    "mtime": 1783823193.291903,
+    "ast_hash": "a0ee391dbce8ce8f1fbb351caa0ef540",
+    "semantic_hash": "a0ee391dbce8ce8f1fbb351caa0ef540"
+  },
+  "src/services/simulator_ai.py": {
+    "mtime": 1783823515.0317185,
+    "ast_hash": "360f15899eaeee731c0520135be534c6",
+    "semantic_hash": "360f15899eaeee731c0520135be534c6"
+  },
+  "src/services/whatsapp.py": {
+    "mtime": 1783821440.3642704,
+    "ast_hash": "8a1a6cccbc858c8a9ef0e0f9d25fdaf0",
+    "semantic_hash": "8a1a6cccbc858c8a9ef0e0f9d25fdaf0"
+  },
+  "tests/ayudas_auth.py": {
+    "mtime": 1783890472.884104,
+    "ast_hash": "f2fdcf43353af27b955289db4524dab9",
+    "semantic_hash": "f2fdcf43353af27b955289db4524dab9"
+  },
+  "tests/conftest.py": {
+    "mtime": 1783798629.0296526,
+    "ast_hash": "64019ff017888c81c6b13780e5f91661",
+    "semantic_hash": "64019ff017888c81c6b13780e5f91661"
+  },
+  "tests/test_agent.py": {
+    "mtime": 1783814673.9984124,
+    "ast_hash": "fdf0040446fe435b47c4a4bcac3e5426",
+    "semantic_hash": "fdf0040446fe435b47c4a4bcac3e5426"
+  },
+  "tests/test_allocation.py": {
+    "mtime": 1783798655.723776,
+    "ast_hash": "262d77fe3d6a1ee6818484229eb60baf",
+    "semantic_hash": "262d77fe3d6a1ee6818484229eb60baf"
+  },
+  "tests/test_editar_asignacion.py": {
+    "mtime": 1783890491.0381129,
+    "ast_hash": "d8895d71e92ad1bb75db850e9c87ff47",
+    "semantic_hash": "d8895d71e92ad1bb75db850e9c87ff47"
+  },
+  "tests/test_editar_perfil.py": {
+    "mtime": 1783890503.0773413,
+    "ast_hash": "714c6f4097ebb60e2ea535d328781bdb",
+    "semantic_hash": "714c6f4097ebb60e2ea535d328781bdb"
+  },
+  "tests/test_eligibility.py": {
+    "mtime": 1783798762.6715217,
+    "ast_hash": "c78d4e206e84edc6fca6ce0ae812db11",
+    "semantic_hash": "c78d4e206e84edc6fca6ce0ae812db11"
+  },
+  "tests/test_feed.py": {
+    "mtime": 1783891995.1166956,
+    "ast_hash": "9bea1463949fbdf055a17a443dd78526",
+    "semantic_hash": "9bea1463949fbdf055a17a443dd78526"
+  },
+  "tests/test_guardrails.py": {
+    "mtime": 1783823515.0327184,
+    "ast_hash": "4d93692f97d3b055f7001f2441c26a1f",
+    "semantic_hash": "4d93692f97d3b055f7001f2441c26a1f"
+  },
+  "tests/test_roles.py": {
+    "mtime": 1783890554.710641,
+    "ast_hash": "5b2e5bd1fcea4ddac30bed51922f3070",
+    "semantic_hash": "5b2e5bd1fcea4ddac30bed51922f3070"
+  },
+  "tests/test_scoring.py": {
+    "mtime": 1783798649.3800566,
+    "ast_hash": "a51d5b08f04c737f0d36005c27da3975",
+    "semantic_hash": "a51d5b08f04c737f0d36005c27da3975"
+  },
+  "tests/test_simulador.py": {
+    "mtime": 1783824143.7902815,
+    "ast_hash": "299af7738c3fa3a0f704af8f6ce16051",
+    "semantic_hash": "299af7738c3fa3a0f704af8f6ce16051"
+  },
+  "tests/test_subcuentas.py": {
+    "mtime": 1783890514.7416017,
+    "ast_hash": "307882a4e3ad004aa199feca86e25e9d",
+    "semantic_hash": "307882a4e3ad004aa199feca86e25e9d"
+  },
+  "tests/test_whatsapp.py": {
+    "mtime": 1783821569.9074986,
+    "ast_hash": "d46510260c4473de878344d7672b7a7b",
+    "semantic_hash": "d46510260c4473de878344d7672b7a7b"
+  },
+  "README.md": {
+    "mtime": 1783912110.5242248,
+    "ast_hash": "afd2620d75fae35d406b4a093065f60a",
+    "semantic_hash": "afd2620d75fae35d406b4a093065f60a"
+  },
+  "render.yaml": {
+    "mtime": 1783899351.3270705,
+    "ast_hash": "76414c705405e2cf0adcb2052bc40867",
+    "semantic_hash": "76414c705405e2cf0adcb2052bc40867"
+  },
+  "requirements.txt": {
+    "mtime": 1783890252.7809098,
+    "ast_hash": "f752dfb698ad0306be4991256f091aef",
+    "semantic_hash": "f752dfb698ad0306be4991256f091aef"
+  }
+}

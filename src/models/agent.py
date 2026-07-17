@@ -5,6 +5,8 @@ la sesión (subcuenta) sobre la que pregunta. La respuesta trae el texto, las fu
 citables (source chips) y si pasó el guardarraíl — la evidencia del criterio #3.
 """
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -27,6 +29,15 @@ class AgentChatRequest(BaseModel):
     # depender de que el texto del mensaje contenga las palabras que el router
     # reconoce. None → el router clasifica el mensaje como siempre (rutas A/B/C/rechazo).
     symbols: list[str] | None = Field(None, max_length=5)
+
+    # Por dónde entró el turno. NO cambia nada de lo que hace el agente: el router, el
+    # guardarraíl y las rutas son los mismos. Solo etiqueta la fila en `llm_interactions`
+    # para que la auditoría distinga una pregunta hablada de una escrita — si el
+    # reconocimiento de voz entendió mal, el turno guardado es la única evidencia de qué
+    # creyó el sistema que se le preguntó. None → 'api' (el chat escrito, el default
+    # histórico de la columna). El valor viaja acotado porque `platform` es un enum en
+    # Postgres: un canal que no exista en `client_platform` falla al insertar.
+    canal: Literal["voz"] | None = None
 
 
 class ProviderInfo(BaseModel):

@@ -1,0 +1,19 @@
+-- Fase 6: el asistente hablado.
+--
+-- No hay agente nuevo acá. La voz es un CANAL, igual que WhatsApp es un canal: el
+-- teléfono reconoce lo que el usuario dice, manda el texto por el mismo
+-- POST /api/agent/chat de siempre, y lee la respuesta en voz alta. El router, el
+-- guardarraíl y las rutas A/B/C/D son exactamente los mismos — por eso esta migración
+-- no crea ni una tabla.
+--
+-- Lo único que falta es poder DISTINGUIR el turno. Sin esto, una pregunta hablada se
+-- guarda como 'api' y en la auditoría es indistinguible del chat escrito: el asesor ve
+-- "el cliente preguntó X" sin saber que lo dijo en voz alta. Y eso importa más de lo que
+-- parece: si el reconocimiento entiende mal ("cien mil" por "sien mil"), el turno
+-- guardado es la ÚNICA evidencia de qué creyó el sistema que se le preguntó. Saber que
+-- venía de un micrófono es lo que hace auditable ese error.
+--
+-- Nota para quien agregue el siguiente canal: `platform` es un enum, no un text. Un
+-- INSERT con un valor que no esté acá falla en runtime, no en los tests que corren sin
+-- base. El valor va PRIMERO, el código después.
+ALTER TYPE public.client_platform ADD VALUE IF NOT EXISTS 'voz';
