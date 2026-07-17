@@ -10,7 +10,9 @@ puntaje **en la base** (nunca en el cliente ni en el LLM), lo clasifica en un pe
 riesgo y arma una propuesta de portafolio con el catálogo del banco. Puede repartir su
 capital en varias **subcuentas** (una por objetivo), conversar con un asistente sobre
 sus datos o sobre mercados externos (también por WhatsApp), y un asesor humano revisa
-cada propuesta antes de que sea definitiva.
+cada propuesta antes de que sea definitiva. Una vez firmada, el cliente la **cursa** con
+un botón: la cartera se convierte en una instrucción por banco, y el banco paga una prima
+por cada inversión intermediada — ver [El modelo de negocio](#el-modelo-de-negocio-en-la-base).
 
 ## Los tres repositorios
 
@@ -59,11 +61,12 @@ Entramos a Postgres directo como el rol `postgres` (bypassea el RLS de
 ### 3. Crear el esquema en Supabase
 
 Pega `schema.sql` en el SQL Editor de Supabase y ejecútalo (crea todas las tablas
-y vistas). Después aplica las migraciones en orden, la más reciente es
-[`migrations/002_subcuentas.sql`](migrations/002_subcuentas.sql) (agrega
-`profiles.total_capital`, `profiling_sessions.subaccount_name` y el trigger que
-valida el capital de las subcuentas). `seed.sql` carga el catálogo de instrumentos,
-las reglas de scoring y las cuentas demo.
+y vistas). Después aplica las migraciones **en orden**, la más reciente es
+[`migrations/005_convenios_ordenes.sql`](migrations/005_convenios_ordenes.sql) (convenios
+por institución, la política de comisión y las órdenes de inversión con sus dos triggers).
+Recién ahí corre `seed.sql`, que carga el catálogo de instrumentos, las reglas de scoring,
+los convenios, la tasa de comisión y las cuentas demo — necesita las columnas que agregan
+las migraciones, así que **el orden importa**: `schema.sql` → `migrations/*` → `seed.sql`.
 
 ### 4. Correr
 
@@ -107,6 +110,74 @@ src/
 Regla del proyecto: **las rutas no saben de SQL y los controllers no saben de HTTP**
 (salvo para lanzar `HTTPException`). Los `services/` no saben de ninguno de los dos:
 `ai_agent`/`agent_graph` reciben datos ya armados y devuelven texto.
+
+### El modelo de negocio, en la base
+
+Brokeate es el **intermediario** entre el inversionista y el banco. La app es gratis para
+el cliente; quien paga es el banco, una prima por cada inversión que entra por acá. El
+asesor es de Brokeate y es **uno solo para todos los bancos** — no hay un asesor por
+institución: por eso puede comparar entre emisores sin representar a ninguno.
+
+Ese modelo no vive en una diapositiva: vive en `migrations/005_convenios_ordenes.sql`, y
+son cuatro reglas que la base **aplica**, no que nosotros prometamos.
+
+| La regla | Cómo se garantiza | Qué pasa si se intenta violar |
+|---|---|---|
+| Una propuesta no se invierte hasta que un asesor la firme | Trigger `fn_valida_orden_firmada` (con `for update` sobre `proposals`, serializa contra `revisar_propuesta`) | `RAISE EXCEPTION` — aunque el insert venga de un script, no de la API |
+| La comisión es la misma para todos los bancos con convenio | `commission_policies` **no tiene columna de institución** + `UNIQUE (rules_version_id)` | No hay dónde escribir una tasa por banco; una segunda tasa viola el UNIQUE |
+| No se cursa plata a un banco sin convenio | Trigger `fn_valida_convenio_item` | `RAISE EXCEPTION` con el nombre de la institución |
+| Una propuesta se invierte una sola vez | `UNIQUE (investment_orders.proposal_id)` | El controller lo traduce a un 409 con el comprobante |
+
+**Por qué la segunda fila importa tanto.** En el momento en que cobramos por convenio,
+"¿me recomiendas al banco que más te paga?" es una pregunta legítima, y "no lo hacemos" no
+es una respuesta verificable. Que **no se pueda** sí lo es: la comisión no puede depender
+del emisor porque no existe la columna donde escribirlo. A Brokeate le da igual cuál de
+los bancos con convenio elija el cliente. Eso lo garantiza el esquema, no nuestra buena fe
+— y `test_ordenes.py` falla si alguien agrega esa columna.
+
+Además, ninguna cifra de plata de estas tablas la escribe Python: `investment_orders
+.comision_total` y `investment_order_items.comision` son columnas **GENERATED**, derivadas
+de `total_amount * comision_bps`. Es el mismo principio de `proposal_items`, llevado hasta
+el final.
+
+**El catálogo y el convenio son listas distintas.** `institutions` informa (el comparador
+muestra la tasa de cualquiera); `convenio_activo` habilita (solo esas pueden recibir una
+orden). Es la respuesta a "¿por qué no me aparece Interactive Brokers, si ahí gano más?":
+no porque lo escondamos, sino porque no hay convenio. `institution_type` ('banco' |
+'cooperativa' | 'broker_internacional') deja crecer el catálogo a entidades que no son
+bancos regulados localmente sin que se confundan con los que sí lo son.
+
+### La ejecución es simulada, y el sistema lo dice
+
+`services/bank_gateway.py` responde como respondería el canal del banco —una referencia
+por instrucción— pero **no mueve dinero**: no hay convenio firmado ni credenciales del
+cliente en la banca del emisor, y este proyecto no finge que los haya. La honestidad es
+estructural: `investment_orders.is_simulated` nace en `true`, viaja al cliente y la app lo
+pinta en pantalla.
+
+Lo que **sí** es real es todo lo demás: quién puede cursar una orden, contra qué
+instituciones, cuánto se cobra, y quién respondió por ella. El día que exista integración
+real, `bank_gateway.cursar()` es la única función que cambia.
+
+Las referencias son deterministas (sembradas con el id de la línea, no con el reloj):
+misma orden, misma referencia. Igual que el respaldo de `market_data` — la demo no cambia
+de números entre el ensayo y la función.
+
+### La IA sigue sin poder ejecutar
+
+Que ahora exista un botón "Invertir ahora" no le abre ninguna puerta al modelo. Se sostiene
+solo, por arquitectura y no por disciplina:
+
+- El **agente** devuelve texto; `agent_graph` no llama endpoints, y sus rutas B/C ni
+  siquiera pueden escribir en `proposals`.
+- El **bot de WhatsApp** se autentica con la firma de Twilio, no con un JWT de
+  inversionista — y `POST /invest` exige `require_role(Rol.INVESTOR)`. Mover plata por
+  WhatsApp es imposible porque no hay token que presentar, no porque hayamos decidido que
+  no.
+- El guardarraíl sigue rechazando el léxico que empuja a ejecutar (`guardrails._PROHIBIDO`).
+
+Lo único que cursa una orden es una persona autenticada tocando un botón, sobre una
+propuesta que otra persona firmó.
 
 ### El principio anti-alucinación (criterio de evaluación #3)
 
@@ -279,9 +350,16 @@ es la firma `X-Twilio-Signature`, validada contra `TWILIO_AUTH_TOKEN` y la URL e
 | `GET` | `/api/investor/{id}/portfolio` | dueño/asesor | La propuesta (la genera la primera vez). `?session_id=` elige la subcuenta |
 | `GET` | `/api/investor/{id}/breakdown` | dueño/asesor | Desglose respuesta → puntos → umbral |
 | `GET` | `/api/investor/{id}` | dueño/asesor | El perfil |
+| `POST` | `/api/investor/proposals/{id}/invest` | investor | **«Invertir ahora»**: cursa la propuesta firmada como N instrucciones bancarias (nace `sent`) |
+| `POST` | `/api/investor/orders/{id}/confirm` | investor | Acuse del banco: cada línea recibe su referencia. Idempotente |
+| `GET` | `/api/investor/orders/{id}` | dueño/asesor | El comprobante |
+| `GET` | `/api/investor/proposals/{id}/order` | dueño/asesor | La orden de una propuesta, o `null` si todavía no se invirtió |
+| `GET` | `/api/catalog/convenios` | autenticado | Con qué instituciones hay convenio y cuánto cobra Brokeate por intermediar |
 | `GET` | `/api/advisor/queue` | advisor | Propuestas pendientes de revisión |
 | `GET` | `/api/advisor/proposals/{id}` | advisor | Detalle + banderas deterministas |
 | `POST` | `/api/advisor/proposals/{id}/review` | advisor | Aprueba / edita / rechaza |
+| `GET` | `/api/advisor/orders` | advisor | Quién acaba de invertir: el aviso que dispara la llamada |
+| `GET` | `/api/advisor/commissions` | advisor | Lo intermediado y lo facturado, por asesor |
 | `GET` | `/api/agent/providers` | autenticado | Proveedores de IA disponibles |
 | `POST` | `/api/agent/chat` | autenticado | Un turno del asistente (3 rutas, ver arriba) |
 | `POST` | `/api/agent/simulador` | autenticado | Recomendación sobre la simulación en pantalla: **el motor elige, la IA solo explica** |
@@ -319,7 +397,13 @@ Los clientes ([app](https://github.com/raydan90s/BROKEATE-APP) y
 ## Estructura de las migraciones
 
 `schema.sql` es la base completa (todas las tablas, vistas y tipos ENUM).
-`migrations/` son los cambios incrementales aplicados **después** de sembrar esa
-base — hoy solo [`002_subcuentas.sql`](migrations/002_subcuentas.sql). Al clonar el
-proyecto de cero, `schema.sql` + `seed.sql` + las migraciones en orden dejan la base
-al día.
+`migrations/` son los cambios incrementales aplicados **después** de crear esa base:
+
+| Migración | Qué agrega |
+|---|---|
+| [`002_subcuentas.sql`](migrations/002_subcuentas.sql) | `profiles.total_capital`, `profiling_sessions.subaccount_name` y el trigger que valida el capital de las subcuentas |
+| [`003_whatsapp.sql`](migrations/003_whatsapp.sql) | `whatsapp_links`, los códigos de vínculo y `'whatsapp'` como origen en la auditoría |
+| [`004_verificacion_correo.sql`](migrations/004_verificacion_correo.sql) | `auth_codes` y `profiles.email_verified_at` |
+| [`005_convenios_ordenes.sql`](migrations/005_convenios_ordenes.sql) | Convenios (`institutions.convenio_activo`, `institution_type`), `commission_policies`, `investment_orders`/`_items` y los dos triggers del modelo de negocio |
+
+Al clonar el proyecto de cero: `schema.sql` → las migraciones en orden → `seed.sql`.

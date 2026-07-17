@@ -198,17 +198,50 @@ on conflict (code) do nothing;
 --    Se muestran siempre con calificadora y fecha. La app NO los presenta como
 --    calificación vigente en tiempo real: eso sería exactamente el tipo de dato
 --    inventado que el criterio #3 penaliza.
-insert into public.institutions (code, name, credit_rating, rating_tier, rating_source, rating_date) values
-  ('PICHINCHA',   'Banco Pichincha',    'AAA',  1, 'BankWatch Ratings',        date '2026-06-30'),
-  ('GUAYAQUIL',   'Banco Guayaquil',    'AAA',  1, 'PCR (Pacific Credit Rating)', date '2026-06-30'),
-  ('PRODUBANCO',  'Produbanco',         'AAA',  1, 'Class International Rating',  date '2026-06-30'),
-  ('BOLIVARIANO', 'Banco Bolivariano',  'AAA',  1, 'Global Ratings',           date '2026-06-30'),
-  ('AUSTRO',      'Banco del Austro',   'AAA',  1, 'BankWatch Ratings',        date '2026-06-30'),
-  ('MACHALA',     'Banco Machala',      'AAA-', 2, 'PCR (Pacific Credit Rating)', date '2026-06-30'),
-  ('SOLIDARIO',   'Banco Solidario',    'AAA-', 2, 'Class International Rating',  date '2026-06-30'),
-  ('VISIONFUND',  'Banco VisionFund',   'AA+',  3, 'Global Ratings',           date '2026-06-30'),
-  ('LOJA',        'Banco Loja',         'AA',   4, 'BankWatch Ratings',        date '2026-06-30'),
-  ('CAPITAL',     'Banco Capital',      'AA',   4, 'PCR (Pacific Credit Rating)', date '2026-06-30');
+-- `convenio_activo` (migración 005) es lo que separa "está en el catálogo" de "puede
+-- recibir tu plata". Tienen convenio las cinco instituciones cuyos productos arma el
+-- catálogo (F.2); las otras cinco quedan sin convenio a propósito: son la prueba de que
+-- el catálogo y el convenio son listas distintas, y de que un banco no queda habilitado
+-- para recibir una orden por el solo hecho de existir en esta tabla.
+insert into public.institutions
+  (code, name, credit_rating, rating_tier, rating_source, rating_date,
+   institution_type, convenio_activo, convenio_desde) values
+  ('PICHINCHA',   'Banco Pichincha',    'AAA',  1, 'BankWatch Ratings',        date '2026-06-30', 'banco', true,  date '2026-01-15'),
+  ('GUAYAQUIL',   'Banco Guayaquil',    'AAA',  1, 'PCR (Pacific Credit Rating)', date '2026-06-30', 'banco', true,  date '2026-01-15'),
+  ('PRODUBANCO',  'Produbanco',         'AAA',  1, 'Class International Rating',  date '2026-06-30', 'banco', true,  date '2026-02-01'),
+  ('BOLIVARIANO', 'Banco Bolivariano',  'AAA',  1, 'Global Ratings',           date '2026-06-30', 'banco', true,  date '2026-02-01'),
+  ('AUSTRO',      'Banco del Austro',   'AAA',  1, 'BankWatch Ratings',        date '2026-06-30', 'banco', false, null),
+  ('MACHALA',     'Banco Machala',      'AAA-', 2, 'PCR (Pacific Credit Rating)', date '2026-06-30', 'banco', false, null),
+  ('SOLIDARIO',   'Banco Solidario',    'AAA-', 2, 'Class International Rating',  date '2026-06-30', 'banco', false, null),
+  ('VISIONFUND',  'Banco VisionFund',   'AA+',  3, 'Global Ratings',           date '2026-06-30', 'banco', false, null),
+  ('LOJA',        'Banco Loja',         'AA',   4, 'BankWatch Ratings',        date '2026-06-30', 'banco', true,  date '2026-03-10'),
+  ('CAPITAL',     'Banco Capital',      'AA',   4, 'PCR (Pacific Credit Rating)', date '2026-06-30', 'banco', false, null);
+
+
+-- --- F.1.b La comisión: UNA tasa, para todos los convenios ------------
+-- 150 bps = 1,50%. Sobre los USD 5.000 del caso de demo son USD 75.
+--
+-- Quién paga: la INSTITUCIÓN, no el inversionista. La app es gratis para el cliente, y esa
+-- es justamente la oferta al banco — captar un cliente de inversión por su cuenta le cuesta
+-- bastante más que esto, y acá le llega ya perfilado, educado y revisado por un asesor.
+--
+-- Por qué esta fila importa más de lo que parece: es la que contesta "¿me recomiendas al
+-- banco que más te paga?". No hay forma de que la respuesta sea "sí", porque
+-- `commission_policies` no tiene columna de institución y tiene un UNIQUE por versión de
+-- reglas — la comisión es la misma en Pichincha que en Loja. Ver el comentario largo en
+-- migrations/005_convenios_ordenes.sql.
+insert into public.commission_policies (rules_version_id, comision_bps, rationale)
+select rv.id,
+       150,
+       'Prima de intermediación que la institución financiera paga a Brokeate por cada '
+       'inversión cursada desde la app. Es la misma para todas las instituciones con '
+       'convenio: la recomendación no depende de cuánto nos paga cada una. El '
+       'inversionista no paga nada.'
+from public.rules_versions rv
+where rv.version_label = 'v1'
+on conflict (rules_version_id) do update
+  set comision_bps = excluded.comision_bps,
+      rationale    = excluded.rationale;
 
 
 -- --- F.2 Productos bancarios ----------------------------------------
