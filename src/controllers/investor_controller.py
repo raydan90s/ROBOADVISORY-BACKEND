@@ -732,6 +732,28 @@ def _guardar_interaccion(
     )
 
 
+def _firma_de(conn: Connection, proposal_id: str) -> dict[str, Any] | None:
+    """Quién firmó esta propuesta y cuándo. `None` si nadie la ha revisado todavía.
+
+    Solo cuentan 'approved' y 'edited': un rechazo es una decisión, pero no es una firma —
+    nadie está respondiendo por esa cartera, así que no hay nombre que mostrar.
+
+    La más reciente, porque una propuesta puede volver a la cola (el cliente corrige su
+    perfil y se regenera): la firma que vale es la última, no la primera.
+    """
+    return conn.execute(
+        """
+        select adv.full_name as advisor_nombre, ar.decided_at
+        from public.advisor_reviews ar
+        join public.profiles adv on adv.id = ar.advisor_id
+        where ar.proposal_id = %s and ar.decision in ('approved', 'edited')
+        order by ar.decided_at desc
+        limit 1
+        """,
+        (proposal_id,),
+    ).fetchone()
+
+
 async def get_portfolio_proposal(
     investor_id: str, session_id: str | None = None
 ) -> PortfolioProposal:
@@ -756,6 +778,7 @@ async def get_portfolio_proposal(
 
         if existente:
             allocations = _allocations_de(conn, existente["id"])
+            firma = _firma_de(conn, existente["id"])
             return PortfolioProposal(
                 proposal_id=str(existente["id"]),
                 investor_id=investor.investor_id,
@@ -769,6 +792,8 @@ async def get_portfolio_proposal(
                 allocations=allocations,
                 retorno_esperado_anual=_retorno_ponderado(allocations),
                 explicacion=existente["explanation"],
+                advisor_nombre=firma["advisor_nombre"] if firma else None,
+                firmada_en=firma["decided_at"] if firma else None,
             )
 
         # Primera vez: materializa la plantilla del perfil como propuesta.

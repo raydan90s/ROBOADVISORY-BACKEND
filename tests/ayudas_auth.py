@@ -23,6 +23,21 @@ from fastapi.testclient import TestClient
 
 from src.config.database import fetch_one
 
+# El dominio de los correos desechables de la suite. Vive acá, en un solo lugar, porque
+# ya se rompió una vez repetido en cuatro archivos.
+#
+# NO puede ser `.local` (ni `.test`, `.invalid` o `.localhost`): son dominios especiales
+# por RFC y `email-validator` —el que le da los dientes a `EmailStr`— los rechaza, así que
+# el registro devolvía 422 y ni empezaban los tests. Uno inexistente pero de forma normal
+# sirve igual: `EmailStr` valida el formato, no la entrega (`check_deliverability=False`),
+# y la suite no manda correos (ver `_sin_correo_saliente` en conftest).
+DOMINIO_DESECHABLE = "zz-tests.brokeate.ec"
+
+
+def correo_desechable(prefijo: str) -> str:
+    """`zz-<prefijo>-<aleatorio>@<dominio>`: el `zz-` marca "esto lo creó un test"."""
+    return f"zz-{prefijo}-{uuid.uuid4().hex[:8]}@{DOMINIO_DESECHABLE}"
+
 
 def codigo_pendiente(email: str, purpose: str = "email_verification") -> str:
     """El código de 6 dígitos que está vivo para ese correo. Falla si no hay ninguno."""
@@ -47,10 +62,9 @@ def registrar_verificado(
 ) -> dict[str, Any]:
     """Registra un inversionista desechable, verifica su correo y devuelve el TokenResponse.
 
-    El correo es `zz-<prefijo>-<aleatorio>@test.local`: el prefijo `zz-` es la marca de
-    "esto lo creó un test" y el aleatorio evita chocar con corridas anteriores.
+    El aleatorio del correo evita chocar con las cuentas que dejaron corridas anteriores.
     """
-    email = f"zz-{prefijo}-{uuid.uuid4().hex[:8]}@test.local"
+    email = correo_desechable(prefijo)
 
     r = cliente.post(
         "/api/auth/register",
