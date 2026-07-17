@@ -269,9 +269,9 @@ def _bps_vigentes() -> int:
     """La tasa publicada hoy.
 
     Se lee de la base en vez de fijarla acá porque es una decisión de negocio: ya pasó de
-    50 a 150 bps y va a volver a moverse. Un test que la clave a mano se cae en cada
-    cambio de precio sin que nada esté roto — y lo que hay que probar no es cuánto se
-    cobra, sino que la aritmética la haga Postgres y cuadre.
+    50 a 150 y de ahí a 450 bps, y va a volver a moverse. Un test que la clave a mano se
+    cae en cada cambio de precio sin que nada esté roto — y lo que hay que probar no es
+    cuánto se cobra, sino que la aritmética la haga Postgres y cuadre.
     """
     fila = fetch_one(
         """
@@ -309,6 +309,44 @@ def test_la_comision_la_calcula_postgres_y_cuadra_con_las_lineas(
 
     suma_montos = sum(linea["monto"] for linea in orden["lineas"])
     assert suma_montos == pytest.approx(orden["monto_total"], abs=0.01)
+
+
+def test_la_comision_la_paga_el_inversionista_y_sale_de_su_inversion(
+    inversionista: dict[str, str],
+) -> None:
+    """Lo que se coloca en bancos es el total MENOS la comisión.
+
+    Este test es la regla de negocio entera: el cliente pone `monto_total`, paga
+    `comision_total` y se invierte `monto_invertido`. Mientras la comisión la pagaba la
+    institución, `monto_invertido` no existía porque era igual al total — que este assert
+    exista y falle si alguien los vuelve a igualar es el punto.
+    """
+    _firmar(inversionista["proposal_id"])
+    r = CLIENTE.post(
+        f"/api/investor/proposals/{inversionista['proposal_id']}/invest",
+        headers=inversionista["cabeceras"],
+    )
+    orden = r.json()
+
+    assert orden["comision_total"] > 0, "si la comisión es 0, este test no prueba nada"
+    assert orden["monto_invertido"] == pytest.approx(
+        orden["monto_total"] - orden["comision_total"]
+    )
+    assert orden["monto_invertido"] < orden["monto_total"]
+
+    # Y la misma resta, banco por banco: la comisión se prorratea, no sale toda de la
+    # primera línea. Si saliera de una sola, esa institución recibiría menos de su
+    # porcentaje y el donut de la propuesta dejaría de describir la cartera real.
+    for linea in orden["lineas"]:
+        assert linea["monto_invertido"] == pytest.approx(
+            linea["monto"] - linea["comision"]
+        )
+
+    # El neto de la orden manda sobre la suma de los netos por línea: son N redondeos a 2
+    # decimales contra uno solo. La tolerancia de un centavo es la misma que ya se acepta
+    # arriba para la comisión, y por la misma razón.
+    suma_netos = sum(linea["monto_invertido"] for linea in orden["lineas"])
+    assert suma_netos == pytest.approx(orden["monto_invertido"], abs=0.01)
 
 
 def test_la_comision_es_la_misma_para_todos_los_bancos() -> None:

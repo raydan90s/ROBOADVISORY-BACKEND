@@ -3,9 +3,12 @@
 Los enums espejan los tipos ENUM de Postgres definidos en
 `migrations/005_convenios_ordenes.sql`: si cambias uno allá, cámbialo aquí.
 
-Igual que con la propuesta, **ningún número de acá nace en Python**: `comision` y
-`comision_total` son columnas GENERATED de Postgres, y los USD por línea salen de
-`proposal_items`. Estos modelos solo los transportan.
+Igual que con la propuesta, **ningún número de acá nace en Python**: `comision`,
+`comision_total` y `monto_invertido` son columnas GENERATED de Postgres, y los USD por
+línea salen de `proposal_items`. Estos modelos solo los transportan.
+
+La comisión la paga el INVERSIONISTA (4,5% del total de la subcuenta) y se descuenta de su
+inversión: por eso `monto_total` y `monto_invertido` son distintos. Ver migrations/006.
 """
 
 from datetime import date, datetime
@@ -51,11 +54,15 @@ class LineaOrden(BaseModel):
     calificacion: str | None = None
     tipo_institucion: TipoInstitucion | None = None
 
+    # `monto` es la porción BRUTA de esta línea (total de la orden × %); `monto_invertido`
+    # es lo que llega al banco una vez descontada su parte de comisión. Son dos cifras y
+    # no una desde que la comisión la paga el cliente: antes coincidían.
     monto: float
     porcentaje: float
 
-    # Lo que el banco le paga a Brokeate por esta línea. Columna GENERATED.
+    # La parte de la comisión que le toca a esta línea. Columna GENERATED.
     comision: float
+    monto_invertido: float
 
     # La devuelve el banco al confirmar. Nula mientras la línea está `sent`: es
     # justamente lo que distingue "mandada" de "acusada".
@@ -83,9 +90,13 @@ class Orden(BaseModel):
     # integración con la banca es simulada y la app lo dice, no lo insinúa.
     is_simulated: bool
 
+    # Los tres números del comprobante, y el orden importa: el cliente pone `monto_total`,
+    # paga `comision_total` y se invierten `monto_invertido`. Que sean tres campos y no dos
+    # es la consecuencia de que la comisión la pague él y salga de su inversión.
     monto_total: float
     comision_bps: int
     comision_total: float
+    monto_invertido: float
     # Por qué se cobra eso y por qué es la misma en todos los bancos. Sale de
     # `commission_policies.rationale`, no de un texto del front ni del LLM.
     comision_rationale: str | None = None
@@ -126,7 +137,7 @@ class Convenio(BaseModel):
 
 
 class PoliticaComision(BaseModel):
-    """La tasa única de intermediación, con su porqué.
+    """La tasa única que paga el inversionista, con su porqué.
 
     `misma_para_todas` no es un dato de la fila: es una propiedad del esquema
     (`commission_policies` no tiene columna de institución y tiene UNIQUE por versión de
@@ -175,6 +186,7 @@ class OrdenFeedItem(BaseModel):
 
     monto_total: float
     comision_total: float
+    monto_invertido: float
 
     lineas: int
     instituciones: int

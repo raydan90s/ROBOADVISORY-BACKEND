@@ -128,17 +128,27 @@ son cuatro reglas que la base **aplica**, no que nosotros prometamos.
 | No se cursa plata a un banco sin convenio | Trigger `fn_valida_convenio_item` | `RAISE EXCEPTION` con el nombre de la institución |
 | Una propuesta se invierte una sola vez | `UNIQUE (investment_orders.proposal_id)` | El controller lo traduce a un 409 con el comprobante |
 
-**Por qué la segunda fila importa tanto.** En el momento en que cobramos por convenio,
-"¿me recomiendas al banco que más te paga?" es una pregunta legítima, y "no lo hacemos" no
-es una respuesta verificable. Que **no se pueda** sí lo es: la comisión no puede depender
-del emisor porque no existe la columna donde escribirlo. A Brokeate le da igual cuál de
-los bancos con convenio elija el cliente. Eso lo garantiza el esquema, no nuestra buena fe
-— y `test_ordenes.py` falla si alguien agrega esa columna.
+**Quién paga la comisión.** El inversionista: **4,5% del total de la subcuenta, descontado
+de su inversión** (migración 006). Pone USD 10.000, se cobran 450, se reparten 9.550 entre
+los bancos. Hasta la 005 el modelo decía que la pagaba la institución y que el cliente no
+pagaba nada — se revirtió porque no era sostenible: ningún banco regala una comisión por
+una orden que igual iba a recibir, y un producto que le dice al cliente que su asesoría es
+gratis está mintiendo sobre quién la paga.
 
-Además, ninguna cifra de plata de estas tablas la escribe Python: `investment_orders
-.comision_total` y `investment_order_items.comision` son columnas **GENERATED**, derivadas
-de `total_amount * comision_bps`. Es el mismo principio de `proposal_items`, llevado hasta
-el final.
+**Por qué la segunda fila importa tanto.** "¿Me recomiendas al banco que más te paga?" es
+una pregunta legítima para cualquier intermediario, y "no lo hacemos" no es una respuesta
+verificable. Que **no se pueda** sí lo es: la comisión no puede depender del emisor porque
+no existe la columna donde escribirlo. A Brokeate le da igual cuál de los bancos con
+convenio elija el cliente. Eso lo garantiza el esquema, no nuestra buena fe — y
+`test_ordenes.py` falla si alguien agrega esa columna. Desde que la comisión la paga el
+cliente esa garantía pesa más, no menos: un sesgo por comisión ahora se pagaría con su
+plata.
+
+Además, ninguna cifra de plata de estas tablas la escribe Python: `comision_total`,
+`comision` y los dos `monto_invertido` son columnas **GENERATED**, derivadas de
+`total_amount * comision_bps`. Es el mismo principio de `proposal_items`, llevado hasta el
+final. Ojo con la distinción que introdujo la 006: `total_amount` es lo que el cliente
+compromete y `monto_invertido` lo que llega a los bancos. Antes coincidían; ya no.
 
 **El catálogo y el convenio son listas distintas.** `institutions` informa (el comparador
 muestra la tasa de cualquiera); `convenio_activo` habilita (solo esas pueden recibir una

@@ -219,24 +219,27 @@ insert into public.institutions
 
 
 -- --- F.1.b La comisión: UNA tasa, para todos los convenios ------------
--- 150 bps = 1,50%. Sobre los USD 5.000 del caso de demo son USD 75.
+-- 450 bps = 4,50%. Sobre los USD 5.000 del caso de demo son USD 225: se colocan 4.775.
 --
--- Quién paga: la INSTITUCIÓN, no el inversionista. La app es gratis para el cliente, y esa
--- es justamente la oferta al banco — captar un cliente de inversión por su cuenta le cuesta
--- bastante más que esto, y acá le llega ya perfilado, educado y revisado por un asesor.
+-- Quién paga: el INVERSIONISTA, y sale de su inversión (ver migrations/006). Hasta la 005
+-- esta fila decía que la pagaba el banco. No era sostenible: ningún banco regala plata por
+-- una orden que igual iba a recibir, y un producto que le dice al cliente "esto es gratis"
+-- le está escondiendo quién lo paga. Ahora el número es más feo y es verdad.
 --
 -- Por qué esta fila importa más de lo que parece: es la que contesta "¿me recomiendas al
 -- banco que más te paga?". No hay forma de que la respuesta sea "sí", porque
 -- `commission_policies` no tiene columna de institución y tiene un UNIQUE por versión de
 -- reglas — la comisión es la misma en Pichincha que en Loja. Ver el comentario largo en
--- migrations/005_convenios_ordenes.sql.
+-- migrations/005_convenios_ordenes.sql. Que ahora la pague el cliente hace esa garantía
+-- MÁS importante: un sesgo por comisión ahora se pagaría con la plata del inversionista.
 insert into public.commission_policies (rules_version_id, comision_bps, rationale)
 select rv.id,
-       150,
-       'Prima de intermediación que la institución financiera paga a Brokeate por cada '
-       'inversión cursada desde la app. Es la misma para todas las instituciones con '
-       'convenio: la recomendación no depende de cuánto nos paga cada una. El '
-       'inversionista no paga nada.'
+       450,
+       'Comisión que el inversionista le paga a Brokeate por cursar su cartera: 4,5% del '
+       'total de la subcuenta, descontado de la inversión. Cubre el perfilamiento, la '
+       'revisión de un asesor con nombre y el envío de una orden por institución. Es la '
+       'misma para todas las instituciones con convenio: la recomendación no depende de '
+       'cuánto nos paga cada una.'
 from public.rules_versions rv
 where rv.version_label = 'v1'
 on conflict (rules_version_id) do update
